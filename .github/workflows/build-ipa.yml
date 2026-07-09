@@ -1,0 +1,70 @@
+name: Build FitbitAir IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "FitbitAir-iOS/**"
+      - ".github/workflows/build-ipa.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-unsigned-ipa:
+    name: Build unsigned IPA for GBox
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build iPhone app without signing
+        run: |
+          set -euo pipefail
+
+          PROJECT="FitbitAir-iOS/FitbitAir.xcodeproj"
+          DERIVED_DATA="$RUNNER_TEMP/FitbitAirDerivedData"
+
+          xcodebuild \
+            -project "$PROJECT" \
+            -target "FitbitAir" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build
+
+          APP_PATH="$DERIVED_DATA/Build/Products/Release-iphoneos/FitbitAir.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "FitbitAir.app was not found at: $APP_PATH"
+            find "$DERIVED_DATA/Build/Products" -maxdepth 4 -type d -name "*.app" -print || true
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/FitbitAir.app"
+
+          cd "$RUNNER_TEMP/ipa"
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/FitbitAir-Unsigned.ipa" Payload
+
+      - name: Verify IPA package
+        run: |
+          set -euo pipefail
+          test -f "FitbitAir-Unsigned.ipa"
+          unzip -l "FitbitAir-Unsigned.ipa" | head -40
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: FitbitAir-Unsigned-IPA
+          path: FitbitAir-Unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
