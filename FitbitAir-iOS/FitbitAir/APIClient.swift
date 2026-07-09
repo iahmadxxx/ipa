@@ -65,7 +65,17 @@ actor APIClient {
         }
         return try decoder.decode(T.self, from: data)
     }
-    func dashboard(date: String? = nil) async throws -> Dashboard { let path = date == nil ? "api/ios/dashboard" : "api/ios/dashboard?date=\(date!)"; let r: DashboardResponse = try await request(path); return r.dashboard }
+    func dashboard(date: String? = nil, force: Bool = false) async throws -> Dashboard {
+        var parts: [String] = []
+        if let date {
+            let encoded = date.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? date
+            parts.append("date=\(encoded)")
+        }
+        if force { parts.append("force=1") }
+        let query = parts.isEmpty ? "" : "?" + parts.joined(separator: "&")
+        let r: DashboardResponse = try await request("api/ios/dashboard\(query)")
+        return r.dashboard
+    }
     func plan() async throws -> [WorkoutDay] { let r: WorkoutPlanResponse = try await request("api/ios/plan"); return r.days }
     func workoutContext(day: String, idx: Int) async throws -> WorkoutContext { try await request("api/ios/workout/context?day=\(day)&idx=\(idx)") }
     func saveSet(day: String, idx: Int, reps: Int, weight: Double) async throws -> SaveSetResponse { try await request("api/ios/workout/set", method: "POST", body: ["day":day,"idx":idx,"reps":reps,"weight":weight]) }
@@ -84,7 +94,12 @@ actor APIClient {
     func editHistory(id: Int, reps: Int, weight: Double) async throws { let _: SimpleResponse = try await request("api/ios/history/edit", method: "POST", body: ["id":id,"reps":reps,"weight":weight]) }
     func deleteHistory(id: Int) async throws { let _: SimpleResponse = try await request("api/ios/history/delete", method: "POST", body: ["id":id]) }
     func ask(_ message: String) async throws -> String { let r: CoachResponse = try await request("api/ios/coach", method: "POST", body: ["message":message]); return r.answer }
-    func insights() async throws -> InsightsResponse { try await request("api/ios/insights") }
+    func insights(force: Bool = false) async throws -> InsightsResponse {
+        try await request(force ? "api/ios/insights?force=1" : "api/ios/insights")
+    }
+    func rebuildAnalytics() async throws -> RebuildAnalyticsResponse {
+        try await request("api/ios/analytics/rebuild", method: "POST", body: [:])
+    }
 
     func connectionStatus() async throws -> ConnectionStatusResponse { try await request("api/ios/connection") }
     func healthDay(date: String) async throws -> HealthDayResponse {

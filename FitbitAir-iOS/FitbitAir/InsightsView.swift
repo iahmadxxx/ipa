@@ -29,12 +29,12 @@ struct InsightsView: View {
         .navigationTitle("التحليلات")
         .background(Color.clear)
         .task { await load() }
-        .refreshable { await load() }
+        .refreshable { await load(force: true) }
     }
 
-    private func load() async {
+    private func load(force: Bool = false) async {
         do {
-            data = try await APIClient.shared.insights()
+            data = try await APIClient.shared.insights(force: force)
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription

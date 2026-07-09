@@ -6,6 +6,8 @@ struct MoreView: View {
     @State private var error: String?
     @State private var showTokenEntry = false
     @State private var manualToken = ""
+    @State private var rebuildingAnalytics = false
+    @State private var rebuildMessage: String?
 
     var body: some View {
         ZStack {
@@ -120,6 +122,29 @@ struct MoreView: View {
                 VStack(spacing: 2) {
                     NavigationLink { InsightsView() } label: { MoreRow(icon: "chart.xyaxis.line", tint: FitTheme.accentBlue, title: "كل التحليلات", subtitle: "التقدم، التوازن، الأوزان والتقرير") }
                     NavigationLink { CoachView() } label: { MoreRow(icon: "sparkles", tint: FitTheme.accentPurple, title: "المدرب الذكي", subtitle: "اسأل عن صحتك وتمرينك الحالي") }
+
+                    Button {
+                        Task { await rebuildAnalytics() }
+                    } label: {
+                        MoreRow(
+                            icon: rebuildingAnalytics ? "hourglass" : "arrow.triangle.2.circlepath.circle.fill",
+                            tint: FitTheme.warning,
+                            title: rebuildingAnalytics ? "جاري إعادة البناء…" : "إعادة بناء التحليلات",
+                            subtitle: "ينظف الأوزان المحذوفة ويعيد حساب PR والتقرير",
+                            showsChevron: false
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(rebuildingAnalytics)
+
+                    if let rebuildMessage {
+                        Text(rebuildMessage)
+                            .font(.caption)
+                            .foregroundStyle(FitTheme.positive)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
         }
@@ -136,6 +161,18 @@ struct MoreView: View {
                 }
             }
         }
+    }
+
+    private func rebuildAnalytics() async {
+        rebuildingAnalytics = true
+        rebuildMessage = nil
+        do {
+            let result = try await APIClient.shared.rebuildAnalytics()
+            rebuildMessage = "تم تنظيف التحليلات: فحص \(result.setsScanned) جولة وإعادة بناء \(result.prsCreated) رقم شخصي."
+        } catch {
+            self.error = error.localizedDescription
+        }
+        rebuildingAnalytics = false
     }
 
     private func infoLine(icon: String, title: String, value: String) -> some View {

@@ -2,7 +2,7 @@ import Foundation
 
 struct APIEnvelope<T: Decodable>: Decodable { let ok: Bool?; let dashboard: T? }
 struct DashboardResponse: Decodable { let ok: Bool; let dashboard: Dashboard }
-struct Dashboard: Decodable, Equatable {
+struct Dashboard: Codable, Equatable {
     let date: String; let steps: Int?; let calories: Int?; let restingHR: Int?; let currentHR: Int?; let currentHRTime: String?; let sleepMinutes: Int?; let readiness: String; let todayPlan: String
     enum CodingKeys: String, CodingKey { case date, steps, calories, readiness; case restingHR = "resting_hr"; case currentHR = "current_hr"; case currentHRTime = "current_hr_time"; case sleepMinutes = "sleep_minutes"; case todayPlan = "today_plan" }
 }
@@ -20,3 +20,5 @@ struct CoachResponse: Decodable { let ok: Bool; let answer: String }
 struct InsightsResponse: Decodable { let ok: Bool; let readiness: String; let todayPlan: String; let progress: String; let balance: String; let nextWeights: String; let weeklyReport: String; enum CodingKeys: String, CodingKey { case ok, readiness, progress, balance; case todayPlan = "today_plan"; case nextWeights = "next_weights"; case weeklyReport = "weekly_report" } }
 struct SimpleResponse: Decodable { let ok: Bool?; let error: String? }
 struct ChatMessage: Identifiable { let id = UUID(); let role: Role; let text: String; enum Role: Equatable { case user, assistant } }
+
+struct RebuildAnalyticsResponse: Decodable { let ok: Bool; let message: String; let setsScanned: Int; let prsCreated: Int; enum CodingKeys: String, CodingKey { case ok, message; case setsScanned = "sets_scanned"; case prsCreated = "prs_created" } }

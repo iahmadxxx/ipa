@@ -1,5 +1,29 @@
 import SwiftUI
 
+private enum DashboardLocalCache {
+    private static let key = "fitbitair.dashboard.cache"
+
+    static func load(for date: String) -> Dashboard? {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let payload = try? JSONDecoder().decode([String: Dashboard].self, from: data) else {
+            return nil
+        }
+        return payload[date]
+    }
+
+    static func save(_ dashboard: Dashboard) {
+        var payload: [String: Dashboard] = [:]
+        if let data = UserDefaults.standard.data(forKey: key),
+           let existing = try? JSONDecoder().decode([String: Dashboard].self, from: data) {
+            payload = existing
+        }
+        payload[dashboard.date] = dashboard
+        if let data = try? JSONEncoder().encode(payload) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+}
+
 struct HomeView: View {
     @State private var dashboard: Dashboard?
     @State private var loading = false
@@ -33,8 +57,8 @@ struct HomeView: View {
         }
         .background(Color.clear)
         .toolbar(.hidden, for: .navigationBar)
-        .refreshable { await load() }
-        .task { await load() }
+        .refreshable { await load(force: true) }
+        .task { await load(useLocalCache: true) }
     }
 
     private var heroHeader: some View {
@@ -52,7 +76,7 @@ struct HomeView: View {
             }
             Spacer()
             CompactIconButton(systemName: loading ? "hourglass" : "arrow.clockwise") {
-                Task { await load() }
+                Task { await load(force: true) }
             }
             .disabled(loading)
         }
@@ -83,7 +107,7 @@ struct HomeView: View {
             }
         }
         .onChange(of: selectedDate) { _, _ in
-            Task { await load() }
+            Task { await load(useLocalCache: true) }
         }
     }
 
@@ -184,16 +208,31 @@ struct HomeView: View {
         }
     }
 
-    private func load() async {
-        loading = true
-        error = nil
-        do {
-            let fmt = DateFormatter()
-            fmt.dateFormat = "yyyy-MM-dd"
-            dashboard = try await APIClient.shared.dashboard(date: fmt.string(from: selectedDate))
-        } catch {
-            self.error = error.localizedDescription
+    private func load(force: Bool = false, useLocalCache: Bool = false) async {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        let dateString = fmt.string(from: selectedDate)
+
+        if useLocalCache, let cached = DashboardLocalCache.load(for: dateString) {
+            dashboard = cached
+            loading = false
+        } else if dashboard == nil {
+            loading = true
         }
+
+        error = nil
+
+        do {
+            let fresh = try await APIClient.shared.dashboard(date: dateString, force: force)
+            dashboard = fresh
+            DashboardLocalCache.save(fresh)
+        } catch {
+            if dashboard == nil {
+                self.error = error.localizedDescription
+            }
+        }
+
         loading = false
     }
 
