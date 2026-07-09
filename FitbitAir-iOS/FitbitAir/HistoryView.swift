@@ -1,0 +1,7 @@
+import SwiftUI
+
+struct HistoryView: View { @State private var records:[HistoryDay]=[];@State private var search="";@State private var edit:GymSet?;@State private var error:String?
+    var filtered:[HistoryDay]{ guard !search.isEmpty else{return records};return records.compactMap{d in let ex=d.exercises.filter{$0.exercise.localizedCaseInsensitiveContains(search)||d.date.contains(search)};return ex.isEmpty ? nil:HistoryDay(date:d.date,exercises:ex)} }
+    var body:some View{List{ForEach(filtered){day in Section(day.date){ForEach(day.exercises){ex in DisclosureGroup{ForEach(ex.sets){s in HStack{Text("جولة \(s.setNumber)");Spacer();Text("\(s.weight,gSpecifier) كجم × \(s.reps)");Button{edit=s}label:{Image(systemName:"pencil")};Button(role:.destructive){Task{if let id=s.id{try? await APIClient.shared.deleteHistory(id:id);await load()}}}label:{Image(systemName:"trash")}}}}label:{VStack(alignment:.leading){Text(ex.exercise).bold();Text(ex.dayLabel).font(.caption).foregroundStyle(.secondary)}}}}};if let error{Text(error).foregroundStyle(.red)}}.navigationTitle("سجل التمارين").searchable(text:$search,prompt:"ابحث بالتمرين أو التاريخ").task{await load()}.refreshable{await load()}.sheet(item:$edit){s in EditSetView(set:s){r,w in Task{if let id=s.id{try? await APIClient.shared.editHistory(id:id,reps:r,weight:w);await load()}}}} }
+    private func load()async{do{records=try await APIClient.shared.history()}catch{self.error=error.localizedDescription}}
+}
