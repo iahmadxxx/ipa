@@ -28,14 +28,31 @@ private enum LiveHeartLocalCache {
     private static let key = "fitbitair.liveheart.last.valid"
 
     static func load() -> LiveHeartResponse? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(LiveHeartResponse.self, from: data)
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let value = try? JSONDecoder().decode(LiveHeartResponse.self, from: data)
+        else { return nil }
+
+        // قراءة بلا وقت لا تُحفظ كأنها صالحة للأبد.
+        guard value.bpm != nil, value.measuredAt != nil else {
+            clear()
+            return nil
+        }
+
+        return value
     }
 
     static func save(_ value: LiveHeartResponse) {
+        // نخزن فقط قراءة لها وقت قياس حقيقي.
         guard value.bpm != nil,
-              let data = try? JSONEncoder().encode(value) else { return }
+              value.measuredAt != nil,
+              let data = try? JSONEncoder().encode(value)
+        else { return }
+
         UserDefaults.standard.set(data, forKey: key)
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: key)
     }
 }
 
@@ -48,6 +65,8 @@ struct HomeView: View {
     @State private var deviceStatusError: String?
     @State private var liveHeart: LiveHeartResponse?
     @State private var liveHeartMessage: String?
+    @State private var noTimestampHeartBPM: Int?
+    @State private var noTimestampHeartFirstSeen: Date?
 
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
@@ -377,8 +396,6 @@ struct HomeView: View {
     private func loadLiveHeart() async {
         guard isToday else { return }
 
-        // The only on-screen heart source is /api/ios/heart/live.
-        // Load last valid response from that same endpoint once, never from Dashboard.
         if liveHeart == nil, let cached = LiveHeartLocalCache.load() {
             liveHeart = cached
         }
@@ -387,18 +404,40 @@ struct HomeView: View {
             let value = try await APIClient.shared.liveHeart()
             liveHeartMessage = value.message
 
-            if value.ok, value.bpm != nil {
-                // BPM from /heart/live is valid even when Google does not provide measured_at.
-                // Never replace it with Dashboard data.
-                liveHeart = value
-                LiveHeartLocalCache.save(value)
-            } else if value.status == "no_data" {
-                if liveHeart == nil {
+            guard value.ok, let bpm = value.bpm else {
+                if value.status == "no_data", liveHeart == nil {
                     liveHeartMessage = value.message
                 }
+                return
+            }
+
+            if value.measuredAt != nil {
+                // أفضل حالة: رقم + وقت قياس حقيقي.
+                noTimestampHeartBPM = nil
+                noTimestampHeartFirstSeen = nil
+                liveHeart = value
+                LiveHeartLocalCache.save(value)
+                return
+            }
+
+            // Google أعطى رقمًا بلا timestamp.
+            // لا نسمح لنفس الرقم أن يبقى معروضًا إلى ما لا نهاية.
+            if noTimestampHeartBPM != bpm {
+                noTimestampHeartBPM = bpm
+                noTimestampHeartFirstSeen = Date()
+                liveHeart = value
+                LiveHeartLocalCache.clear()
+                return
+            }
+
+            let age = Date().timeIntervalSince(noTimestampHeartFirstSeen ?? Date())
+            if age <= 180 {
+                liveHeart = value
+            } else {
+                liveHeart = nil
+                liveHeartMessage = "لم تصل قراءة نبض جديدة بوقت موثّق."
             }
         } catch {
-            // Keep last valid /heart/live reading only.
             liveHeartMessage = "تعذر جلب قراءة أحدث الآن."
         }
     }
@@ -457,7 +496,7 @@ struct HomeView: View {
         }
 
         guard let measuredAt = value.measuredAt else {
-            return "أحدث قراءة متاحة • وقت القراءة غير متوفر"
+            return "قراءة مؤقتة بلا وقت • تختفي إذا لم تتحدث"
         }
 
         let age = effectiveHeartAgeSeconds(value)
