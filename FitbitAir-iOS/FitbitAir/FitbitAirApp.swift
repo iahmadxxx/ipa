@@ -119,7 +119,7 @@ private struct PersonalSplashView: View {
 }
 
 enum AppTab: String, CaseIterable, Identifiable {
-    case home, workout, history, coach, insights
+    case home, workout, history, coach, insights, more
     var id: String { rawValue }
 
     var title: String {
@@ -129,6 +129,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .history: return "السجل"
         case .coach: return "المدرب"
         case .insights: return "التحليلات"
+        case .more: return "المزيد"
         }
     }
 
@@ -139,6 +140,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .history: return "clock.arrow.circlepath"
         case .coach: return "bubble.left.and.text.bubble.right.fill"
         case .insights: return "chart.line.uptrend.xyaxis"
+        case .more: return "ellipsis.circle.fill"
         }
     }
 }
@@ -162,6 +164,8 @@ struct RootView: View {
                     CoachView()
                 case .insights:
                     NavigationStack { InsightsView() }
+                case .more:
+                    NavigationStack { MoreView() }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -195,7 +199,7 @@ private struct CustomTabBar: View {
                                 .foregroundStyle(selection == tab ? FitTheme.accent : .white.opacity(0.42))
                         }
                         Text(tab.title)
-                            .font(.system(size: 10, weight: selection == tab ? .bold : .medium))
+                            .font(.system(size: 9, weight: selection == tab ? .bold : .medium))
                             .foregroundStyle(selection == tab ? .white : .white.opacity(0.42))
                     }
                     .frame(maxWidth: .infinity)

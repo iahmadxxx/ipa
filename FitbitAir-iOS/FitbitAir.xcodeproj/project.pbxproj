@@ -15,6 +15,7 @@
 		000000000000000000000013 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000008 /* HistoryView.swift */; };
 		000000000000000000000014 /* CoachView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000009 /* CoachView.swift */; };
 		000000000000000000000015 /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000A /* InsightsView.swift */; };
+		000000000000000000000026 /* MoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000027 /* MoreView.swift */; };
 		000000000000000000000024 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000025 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 /* Begin PBXFileReference section */
@@ -29,6 +30,7 @@
 		000000000000000000000009 /* CoachView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachView.swift; sourceTree = "<group>"; };
 		00000000000000000000000A /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
 		00000000000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		000000000000000000000027 /* MoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreView.swift; sourceTree = "<group>"; };
 		000000000000000000000018 /* FitbitAir.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FitbitAir.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000025 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -51,6 +53,7 @@
 				000000000000000000000008 /* HistoryView.swift */,
 				000000000000000000000009 /* CoachView.swift */,
 				00000000000000000000000A /* InsightsView.swift */,
+				000000000000000000000027 /* MoreView.swift */,
 				00000000000000000000000B /* Info.plist */,
 				000000000000000000000025 /* Assets.xcassets */,
 			); path = FitbitAir; sourceTree = "<group>"; };
@@ -77,6 +80,7 @@
 				000000000000000000000013 /* HistoryView.swift in Sources */,
 				000000000000000000000014 /* CoachView.swift in Sources */,
 				000000000000000000000015 /* InsightsView.swift in Sources */,
+				000000000000000000000026 /* MoreView.swift in Sources */,
 			); runOnlyForDeploymentPostprocessing=0; };
 /* End PBXSourcesBuildPhase section */
 /* Begin XCBuildConfiguration section */
