@@ -25,7 +25,9 @@ from flask import Flask, request, jsonify, Response
 from google_health_client import (
     get_today_summary, get_week_summary, get_sleep, get_resting_heart_rate,
     get_current_heart_rate, get_summary_by_date, get_week_summary_for, GoogleHealthError,
+    TokenExpiredError,
 )
+import token_store
 from analyzer import (
     format_today_message, format_week_message, format_sleep_message,
     format_heart_message, format_activity_message,
@@ -46,6 +48,48 @@ ALLOWED_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TELEGRAM_FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://web-production-45a08f.up.railway.app").rstrip("/")
+
+# --- إعدادات إعادة الموافقة (reauth) ---
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_SCOPES = (
+    "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly "
+    "https://www.googleapis.com/auth/googlehealth.sleep.readonly "
+    "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly"
+)
+REAUTH_REDIRECT = f"{PUBLIC_BASE_URL}/reauth/callback"
+
+
+def _reauth_state():
+    """توقيع بسيط يمنع أي شخص غريب من استخدام مسار إعادة الموافقة."""
+    return hmac.new(BOT_TOKEN.encode(), b"reauth-v1", hashlib.sha256).hexdigest()[:32]
+
+
+def _reauth_url():
+    from urllib.parse import urlencode
+    params = urlencode({
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": REAUTH_REDIRECT,
+        "response_type": "code",
+        "scope": GOOGLE_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": _reauth_state(),
+    })
+    return f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
+
+
+def send_reauth_link(chat_id, reason=""):
+    prefix = f"⚠️ {reason}\n\n" if reason else ""
+    send_message(
+        chat_id,
+        prefix + "🔑 اضغط الزر، سجّل دخولك بقوقل واضغط \"السماح\" — "
+        "والبوت يستلم التوكن الجديد ويحفظه بنفسه خلال ثواني.",
+        reply_markup={"inline_keyboard": [[{
+            "text": "🔄 تجديد ربط Google Health",
+            "url": _reauth_url(),
+        }]]},
+    )
 GYM_MANAGE_FLOW = {}
 
 MAIN_KEYBOARD = {
@@ -780,6 +824,11 @@ def handle_command(chat_id, text):
         if text == "/start":
             send_message(chat_id, WELCOME_MESSAGE, reply_markup=MAIN_KEYBOARD, parse_mode="HTML")
 
+        elif text in ("/reauth", "/تجديد"):
+            updated = token_store.token_updated_at()
+            note = f"آخر تجديد: {updated} UTC" if updated else "ما فيه توكن محفوظ بقاعدة البيانات بعد."
+            send_reauth_link(chat_id, reason=note)
+
         elif text in ("/تمرين", "/gym"):
             send_gym_days_menu(chat_id)
 
@@ -847,6 +896,8 @@ def handle_command(chat_id, text):
         else:
             _answer_coach_question(chat_id, text)
 
+    except TokenExpiredError:
+        send_reauth_link(chat_id, reason="توكن Google انتهى (تجديد أسبوعي معتاد).")
     except GoogleHealthError as e:
         send_message(chat_id, f"⚠️ خطأ بجلب بياناتك من Google Health:\n{e}")
     except AICoachError as e:
@@ -1283,13 +1334,116 @@ def telegram_webhook(token):
     return jsonify({"ok": True})
 
 
+@app.route("/reauth/callback")
+def reauth_callback():
+    """يستقبل كود جوجل بعد موافقتك، يبدله بتوكنات، ويحفظ refresh token تلقائيًا."""
+    if request.args.get("state") != _reauth_state():
+        return Response("رابط غير صالح.", status=403, mimetype="text/plain; charset=utf-8")
+
+    error = request.args.get("error")
+    if error:
+        return Response(f"جوجل رفضت الطلب: {error}", status=400,
+                        mimetype="text/plain; charset=utf-8")
+
+    code = request.args.get("code")
+    if not code:
+        return Response("ما وصل كود من جوجل.", status=400,
+                        mimetype="text/plain; charset=utf-8")
+
+    resp = requests.post("https://oauth2.googleapis.com/token", data={
+        "code": code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": REAUTH_REDIRECT,
+        "grant_type": "authorization_code",
+    }, timeout=15)
+
+    if resp.status_code != 200:
+        return Response(
+            f"فشل تبديل الكود بتوكن ({resp.status_code}): {resp.text[:200]}",
+            status=500, mimetype="text/plain; charset=utf-8",
+        )
+
+    data = resp.json()
+    refresh = data.get("refresh_token")
+    if not refresh:
+        return Response(
+            "جوجل ما رجعت refresh token — جرب الرابط مرة ثانية من البوت.",
+            status=500, mimetype="text/plain; charset=utf-8",
+        )
+
+    token_store.save_refresh_token(refresh)
+    # نظف كاش access token القديم عشان الطلب الجاي يستخدم الجديد فورًا
+    try:
+        from google_health_client import _token_cache
+        _token_cache["access_token"] = None
+        _token_cache["expires_at"] = 0
+    except Exception:
+        pass
+
+    try:
+        send_message(ALLOWED_CHAT_ID, "✅ تم تجديد ربط Google Health بنجاح! التوكن الجديد محفوظ ويشتغل تلقائيًا.")
+    except Exception:
+        pass
+
+    html = (
+        "<html dir='rtl'><head><meta charset='utf-8'>"
+        "<style>body{font-family:sans-serif;text-align:center;padding:60px;"
+        "background:#0f1420;color:#e8ecf4}h1{color:#4ade80}</style></head>"
+        "<body><h1>✅ تم التجديد بنجاح</h1>"
+        "<p>التوكن الجديد انحفظ تلقائيًا. تقدر تسكر هذي الصفحة وترجع للبوت.</p>"
+        "</body></html>"
+    )
+    return Response(html, mimetype="text/html; charset=utf-8")
+
+
+@app.route("/cron/daily")
+def cron_daily():
+    """تستدعيها خدمة Cron عبر curl — تشغّل الملخص الصباحي داخل خدمة الويب
+    (عشان تشوف قاعدة البيانات والتوكن المحدث)."""
+    if request.args.get("key") != _reauth_state():
+        return Response("مفتاح غير صالح.", status=403, mimetype="text/plain; charset=utf-8")
+    try:
+        import daily_summary
+        daily_summary.main()
+        return "OK", 200
+    except TokenExpiredError:
+        send_reauth_link(ALLOWED_CHAT_ID, reason="توكن Google انتهى — ما قدرت أرسل ملخص الصباح.")
+        return "TOKEN_EXPIRED", 200
+    except Exception as e:
+        return Response(f"ERR: {e}", status=500, mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/cron/alerts")
+def cron_alerts():
+    """تستدعيها خدمة Cron عبر curl — تشغّل التنبيهات الذكية داخل خدمة الويب."""
+    if request.args.get("key") != _reauth_state():
+        return Response("مفتاح غير صالح.", status=403, mimetype="text/plain; charset=utf-8")
+    try:
+        import smart_alerts
+        smart_alerts.main()
+        return "OK", 200
+    except TokenExpiredError:
+        send_reauth_link(ALLOWED_CHAT_ID, reason="توكن Google انتهى — التنبيهات متوقفة لين تجدد.")
+        return "TOKEN_EXPIRED", 200
+    except Exception as e:
+        return Response(f"ERR: {e}", status=500, mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/cron/key")
+def cron_key():
+    """يعرض مفتاح الـ cron مرة وحدة لصاحب البوت فقط (تفتحه بنفسك وتنسخ المفتاح)."""
+    # حماية بسيطة: يرسل المفتاح لتلقرامك بدل عرضه للعامة
+    try:
+        send_message(ALLOWED_CHAT_ID, f"🔐 مفتاح خدمات Cron:\n{_reauth_state()}")
+    except Exception:
+        pass
+    return "أرسلت المفتاح لتلقرامك.", 200
+
+
 @app.route("/ping")
 def ping():
     return "OK", 200
-
-
-if __name__ == "__main__":
-    app.run()
 
 
 # ---------------------------------------------------------------------------
@@ -1480,3 +1634,6 @@ def ios_insights():
                         "progress":progress_report(), "balance":format_muscle_balance(),
                         "next_weights":format_next_suggestions(), "weekly_report":weekly_report(today)})
     except Exception as e: return jsonify({"error":str(e)}), 500
+
+if __name__ == "__main__":
+    app.run()

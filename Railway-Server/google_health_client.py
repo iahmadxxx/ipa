@@ -6,6 +6,8 @@ google_health_client.py — النسخة المطورة
 import os
 import time
 import requests
+
+import token_store
 from datetime import datetime, timedelta, timezone, date as date_type
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -22,6 +24,11 @@ class GoogleHealthError(Exception):
     pass
 
 
+class TokenExpiredError(GoogleHealthError):
+    """التوكن انتهى نهائيًا ويحتاج إعادة موافقة (/reauth)."""
+    pass
+
+
 def get_access_token():
     now = time.time()
     if _token_cache["access_token"] and now < _token_cache["expires_at"]:
@@ -29,7 +36,7 @@ def get_access_token():
 
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
-    refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN")
+    refresh_token = token_store.get_refresh_token()
 
     if not all([client_id, client_secret, refresh_token]):
         raise GoogleHealthError("أسرار Google ناقصة (تحقق من env_config.py).")
@@ -42,8 +49,13 @@ def get_access_token():
     }, timeout=REQUEST_TIMEOUT)
 
     if resp.status_code != 200:
+        body = resp.text[:200]
+        if "invalid_grant" in body:
+            raise TokenExpiredError(
+                "توكن Google انتهى (الوضع Testing = صلاحية 7 أيام)."
+            )
         raise GoogleHealthError(
-            f"فشل تجديد access token ({resp.status_code}): {resp.text[:200]}"
+            f"فشل تجديد access token ({resp.status_code}): {body}"
         )
     data = resp.json()
     token = data["access_token"]
