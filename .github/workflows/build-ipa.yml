@@ -2,10 +2,6 @@ name: Build FitbitAir IPA
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "FitbitAir-iOS/**"
-      - ".github/workflows/build-ipa.yml"
 
 permissions:
   contents: read
@@ -28,24 +24,26 @@ jobs:
           set -euo pipefail
 
           PROJECT="FitbitAir-iOS/FitbitAir.xcodeproj"
-          DERIVED_DATA="$RUNNER_TEMP/FitbitAirDerivedData"
+          BUILD_DIR="$RUNNER_TEMP/FitbitAirBuild"
+
+          mkdir -p "$BUILD_DIR"
 
           xcodebuild \
             -project "$PROJECT" \
             -target "FitbitAir" \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath "$DERIVED_DATA" \
+            CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             clean build
 
-          APP_PATH="$DERIVED_DATA/Build/Products/Release-iphoneos/FitbitAir.app"
+          APP_PATH="$BUILD_DIR/FitbitAir.app"
 
           if [ ! -d "$APP_PATH" ]; then
-            echo "FitbitAir.app was not found at: $APP_PATH"
-            find "$DERIVED_DATA/Build/Products" -maxdepth 4 -type d -name "*.app" -print || true
+            echo "FitbitAir.app was not found"
+            find "$BUILD_DIR" -maxdepth 3 -name "*.app" -print || true
             exit 1
           fi
 
