@@ -82,7 +82,13 @@ struct CoachView: View {
             }
             .onChange(of: messages.count) { _, _ in scrollToLatest(using: proxy) }
             .onChange(of: loading) { _, _ in
-                withAnimation { proxy.scrollTo(loading ? "thinking" : messages.last?.id, anchor: .bottom) }
+                withAnimation {
+                    if loading {
+                        proxy.scrollTo("thinking", anchor: .bottom)
+                    } else if let lastID = messages.last?.id {
+                        proxy.scrollTo(lastID, anchor: .bottom)
+                    }
+                }
             }
         }
     }
