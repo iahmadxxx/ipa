@@ -1,14 +1,211 @@
 import SwiftUI
+import BackgroundTasks
 
 @main
 struct FitbitAirApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        BackgroundSyncManager.shared.register()
+    }
+
     var body: some Scene {
         WindowGroup {
             AppLaunchView()
                 .environment(\.layoutDirection, .rightToLeft)
                 .preferredColorScheme(.dark)
                 .tint(FitTheme.accent)
+                .onAppear {
+                    BackgroundSyncManager.shared.scheduleAll()
+                }
         }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:
+                BackgroundSyncManager.shared.scheduleAll()
+            case .background:
+                BackgroundSyncManager.shared.scheduleAll()
+            default:
+                break
+            }
+        }
+    }
+}
+
+
+private final class BackgroundSyncManager {
+    static let shared = BackgroundSyncManager()
+
+    private let refreshIdentifier = "com.ahmed.fitbitair.refresh"
+    private let processingIdentifier = "com.ahmed.fitbitair.processing"
+    private let lastSyncKey = "fitbitair.background.lastSync"
+
+    private init() {}
+
+    func register() {
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: refreshIdentifier,
+            using: nil
+        ) { [weak self] task in
+            guard let self, let refreshTask = task as? BGAppRefreshTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            self.handleAppRefresh(refreshTask)
+        }
+
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: processingIdentifier,
+            using: nil
+        ) { [weak self] task in
+            guard let self, let processingTask = task as? BGProcessingTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            self.handleProcessing(processingTask)
+        }
+    }
+
+    func scheduleAll() {
+        scheduleRefresh()
+        scheduleProcessing()
+    }
+
+    private func scheduleRefresh() {
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: refreshIdentifier)
+
+        let request = BGAppRefreshTaskRequest(identifier: refreshIdentifier)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            // iOS may defer or reject a request temporarily; the next app lifecycle event retries.
+        }
+    }
+
+    private func scheduleProcessing() {
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: processingIdentifier)
+
+        let request = BGProcessingTaskRequest(identifier: processingIdentifier)
+        request.requiresNetworkConnectivity = true
+        request.requiresExternalPower = false
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 60 * 60)
+
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            // The refresh task remains available even if processing is deferred.
+        }
+    }
+
+    private func handleAppRefresh(_ task: BGAppRefreshTask) {
+        scheduleRefresh()
+
+        let syncTask = Task {
+            let success = await performSync()
+            task.setTaskCompleted(success: success)
+        }
+
+        task.expirationHandler = {
+            syncTask.cancel()
+        }
+    }
+
+    private func handleProcessing(_ task: BGProcessingTask) {
+        scheduleProcessing()
+
+        let syncTask = Task {
+            let success = await performSync()
+            task.setTaskCompleted(success: success)
+        }
+
+        task.expirationHandler = {
+            syncTask.cancel()
+        }
+    }
+
+    private func performSync() async -> Bool {
+        guard !Task.isCancelled else { return false }
+
+        let date = qatarDateString()
+
+        let results = await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
+            group.addTask {
+                do {
+                    _ = try await APIClient.shared.healthSummary(date: date, force: true)
+                    return true
+                } catch {
+                    return false
+                }
+            }
+
+            group.addTask {
+                do {
+                    _ = try await APIClient.shared.healthSleep(date: date, force: true)
+                    return true
+                } catch {
+                    return false
+                }
+            }
+
+            group.addTask {
+                do {
+                    _ = try await APIClient.shared.healthActivity(date: date, force: true)
+                    return true
+                } catch {
+                    return false
+                }
+            }
+
+            group.addTask {
+                do {
+                    _ = try await APIClient.shared.healthReadiness(date: date, force: true)
+                    return true
+                } catch {
+                    return false
+                }
+            }
+
+            group.addTask {
+                do {
+                    _ = try await APIClient.shared.deviceStatus(force: true)
+                    return true
+                } catch {
+                    return false
+                }
+            }
+
+            group.addTask {
+                do {
+                    _ = try await APIClient.shared.liveHeart()
+                    return true
+                } catch {
+                    return false
+                }
+            }
+
+            var values: [Bool] = []
+            for await value in group {
+                values.append(value)
+            }
+            return values
+        }
+
+        let succeeded = results.contains(true)
+        if succeeded {
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastSyncKey)
+        }
+        return succeeded
+    }
+
+    private func qatarDateString() -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Qatar")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
     }
 }
 

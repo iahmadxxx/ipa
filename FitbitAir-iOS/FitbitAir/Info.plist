@@ -26,5 +26,15 @@
 	</array>
 	<key>UIRequiresFullScreen</key>
 	<true/>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.ahmed.fitbitair.refresh</string>
+		<string>com.ahmed.fitbitair.processing</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
 </dict>
 </plist>

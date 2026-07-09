@@ -582,6 +582,22 @@ struct HealthArchiveView: View {
                 }
                 .frame(maxWidth: .infinity)
             }
+
+            HStack(spacing: 10) {
+                sleepTimeCard(
+                    title: "نمت",
+                    time: sleepClockText(r.sleep?.start),
+                    icon: "moon.zzz.fill",
+                    tint: FitTheme.accentPurple
+                )
+                sleepTimeCard(
+                    title: "قمت",
+                    time: sleepClockText(r.sleep?.end),
+                    icon: "sunrise.fill",
+                    tint: FitTheme.warning
+                )
+            }
+
             HStack(spacing: 10) {
                 stageCard("عميق", r.sleep?.deepMinutes ?? 0, FitTheme.accentBlue)
                 stageCard("خفيف", r.sleep?.lightMinutes ?? 0, FitTheme.accent)
@@ -628,6 +644,76 @@ struct HealthArchiveView: View {
                 Text(plan).font(.subheadline).foregroundStyle(.white.opacity(0.78)).textSelection(.enabled)
             }
         }
+    }
+
+    private func sleepTimeCard(
+        title: String,
+        time: String,
+        icon: String,
+        tint: Color
+    ) -> some View {
+        GlassCard(padding: 13) {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: icon)
+                    .font(.headline)
+                    .foregroundStyle(tint)
+
+                Text(time)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+    }
+
+    private func sleepClockText(_ value: String?) -> String {
+        guard let value, !value.isEmpty, let date = parseSleepDate(value) else {
+            return "غير متاح"
+        }
+
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "ar_QA")
+        formatter.timeZone = TimeZone(identifier: "Asia/Qatar")
+        formatter.dateFormat = "h:mm a"
+        return formatter.string(from: date)
+    }
+
+    private func parseSleepDate(_ value: String) -> Date? {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: value) {
+            return date
+        }
+
+        iso.formatOptions = [.withInternetDateTime]
+        if let date = iso.date(from: value) {
+            return date
+        }
+
+        let formats = [
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+            "yyyy-MM-dd HH:mm:ssXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ss"
+        ]
+
+        for format in formats {
+            let formatter = DateFormatter()
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = format
+
+            if let date = formatter.date(from: value) {
+                return date
+            }
+        }
+
+        return nil
     }
 
     private func stageCard(_ title: String, _ minutes: Int, _ tint: Color) -> some View {
