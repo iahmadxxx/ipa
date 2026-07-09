@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build-unsigned-ipa:
-    name: Build unsigned IPA for GBox
+    name: Build verified unsigned IPA for GBox
     runs-on: macos-latest
     timeout-minutes: 30
 
@@ -42,10 +42,88 @@ jobs:
           APP_PATH="$BUILD_DIR/FitbitAir.app"
 
           if [ ! -d "$APP_PATH" ]; then
-            echo "FitbitAir.app was not found"
-            find "$BUILD_DIR" -maxdepth 3 -name "*.app" -print || true
+            echo "ERROR: FitbitAir.app was not found"
+            find "$BUILD_DIR" -maxdepth 4 -name "*.app" -print || true
             exit 1
           fi
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      - name: Force app identity and icon into built app
+        run: |
+          set -euo pipefail
+
+          PLIST="$APP_PATH/Info.plist"
+          PLISTBUDDY="/usr/libexec/PlistBuddy"
+          ICON_SOURCE_2X="FitbitAir-iOS/FitbitAir/Assets.xcassets/AppIcon.appiconset/AppIcon-120.png"
+          ICON_SOURCE_3X="FitbitAir-iOS/FitbitAir/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png"
+
+          test -f "$PLIST"
+          test -f "$ICON_SOURCE_2X"
+          test -f "$ICON_SOURCE_3X"
+
+          set_plist_value() {
+            local key="$1"
+            local type="$2"
+            local value="$3"
+            "$PLISTBUDDY" -c "Set :$key $value" "$PLIST" 2>/dev/null || \
+            "$PLISTBUDDY" -c "Add :$key $type $value" "$PLIST"
+          }
+
+          set_plist_value "CFBundleDisplayName" string "FitbitAir"
+          set_plist_value "CFBundleName" string "FitbitAir"
+          set_plist_value "CFBundleIdentifier" string "com.ahmed.fitbitair"
+          set_plist_value "CFBundleShortVersionString" string "1.0"
+          set_plist_value "CFBundleVersion" string "1"
+          set_plist_value "CFBundleExecutable" string "FitbitAir"
+          set_plist_value "CFBundlePackageType" string "APPL"
+
+          cp "$ICON_SOURCE_2X" "$APP_PATH/AppIcon60x60@2x.png"
+          cp "$ICON_SOURCE_3X" "$APP_PATH/AppIcon60x60@3x.png"
+
+          "$PLISTBUDDY" -c "Delete :CFBundleIconFiles" "$PLIST" 2>/dev/null || true
+          "$PLISTBUDDY" -c "Add :CFBundleIconFiles array" "$PLIST"
+          "$PLISTBUDDY" -c "Add :CFBundleIconFiles:0 string AppIcon60x60" "$PLIST"
+
+          "$PLISTBUDDY" -c "Delete :CFBundleIcons" "$PLIST" 2>/dev/null || true
+          "$PLISTBUDDY" -c "Add :CFBundleIcons dict" "$PLIST"
+          "$PLISTBUDDY" -c "Add :CFBundleIcons:CFBundlePrimaryIcon dict" "$PLIST"
+          "$PLISTBUDDY" -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles array" "$PLIST"
+          "$PLISTBUDDY" -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:0 string AppIcon60x60" "$PLIST"
+          "$PLISTBUDDY" -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName string AppIcon" "$PLIST"
+
+          plutil -lint "$PLIST"
+
+          echo "Built app identity:"
+          "$PLISTBUDDY" -c "Print :CFBundleDisplayName" "$PLIST"
+          "$PLISTBUDDY" -c "Print :CFBundleIdentifier" "$PLIST"
+          "$PLISTBUDDY" -c "Print :CFBundleShortVersionString" "$PLIST"
+          "$PLISTBUDDY" -c "Print :CFBundleVersion" "$PLIST"
+
+      - name: Verify built app before packaging
+        run: |
+          set -euo pipefail
+
+          PLIST="$APP_PATH/Info.plist"
+          PLISTBUDDY="/usr/libexec/PlistBuddy"
+
+          NAME="$("$PLISTBUDDY" -c "Print :CFBundleDisplayName" "$PLIST")"
+          BUNDLE_ID="$("$PLISTBUDDY" -c "Print :CFBundleIdentifier" "$PLIST")"
+          VERSION="$("$PLISTBUDDY" -c "Print :CFBundleShortVersionString" "$PLIST")"
+          BUILD="$("$PLISTBUDDY" -c "Print :CFBundleVersion" "$PLIST")"
+
+          test "$NAME" = "FitbitAir"
+          test "$BUNDLE_ID" = "com.ahmed.fitbitair"
+          test "$VERSION" = "1.0"
+          test "$BUILD" = "1"
+          test -f "$APP_PATH/AppIcon60x60@2x.png"
+          test -f "$APP_PATH/AppIcon60x60@3x.png"
+
+          echo "✅ App metadata and icon verified before packaging"
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
 
           rm -rf "$RUNNER_TEMP/ipa"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
@@ -54,16 +132,47 @@ jobs:
           cd "$RUNNER_TEMP/ipa"
           /usr/bin/zip -qry "$GITHUB_WORKSPACE/FitbitAir-Unsigned.ipa" Payload
 
-      - name: Verify IPA package
+      - name: Verify final IPA contents
         run: |
           set -euo pipefail
-          test -f "FitbitAir-Unsigned.ipa"
-          unzip -l "FitbitAir-Unsigned.ipa" | head -40
 
-      - name: Upload IPA
+          VERIFY_DIR="$RUNNER_TEMP/verify-ipa"
+          rm -rf "$VERIFY_DIR"
+          mkdir -p "$VERIFY_DIR"
+
+          unzip -q "FitbitAir-Unsigned.ipa" -d "$VERIFY_DIR"
+
+          FINAL_APP="$VERIFY_DIR/Payload/FitbitAir.app"
+          FINAL_PLIST="$FINAL_APP/Info.plist"
+          PLISTBUDDY="/usr/libexec/PlistBuddy"
+
+          test -d "$FINAL_APP"
+          test -f "$FINAL_PLIST"
+          test -f "$FINAL_APP/AppIcon60x60@2x.png"
+          test -f "$FINAL_APP/AppIcon60x60@3x.png"
+
+          NAME="$("$PLISTBUDDY" -c "Print :CFBundleDisplayName" "$FINAL_PLIST")"
+          BUNDLE_ID="$("$PLISTBUDDY" -c "Print :CFBundleIdentifier" "$FINAL_PLIST")"
+          VERSION="$("$PLISTBUDDY" -c "Print :CFBundleShortVersionString" "$FINAL_PLIST")"
+          BUILD="$("$PLISTBUDDY" -c "Print :CFBundleVersion" "$FINAL_PLIST")"
+
+          echo "Final IPA metadata:"
+          echo "Name: $NAME"
+          echo "Bundle ID: $BUNDLE_ID"
+          echo "Version: $VERSION"
+          echo "Build: $BUILD"
+
+          test "$NAME" = "FitbitAir"
+          test "$BUNDLE_ID" = "com.ahmed.fitbitair"
+          test "$VERSION" = "1.0"
+          test "$BUILD" = "1"
+
+          echo "✅ FINAL IPA VERIFIED — safe to upload as artifact"
+
+      - name: Upload verified IPA
         uses: actions/upload-artifact@v4
         with:
-          name: FitbitAir-Unsigned-IPA
+          name: FitbitAir-VERIFIED-Unsigned-IPA
           path: FitbitAir-Unsigned.ipa
           if-no-files-found: error
           retention-days: 30
