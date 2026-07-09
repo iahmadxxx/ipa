@@ -4,7 +4,6 @@ struct MoreView: View {
     @State private var status: ConnectionStatusResponse?
     @State private var loading = true
     @State private var error: String?
-    @State private var selectedSleepStage: SleepStageSelection?
     @State private var showTokenEntry = false
     @State private var manualToken = ""
     @State private var rebuildingAnalytics = false
@@ -627,6 +626,7 @@ struct HealthArchiveView: View {
     @State private var loading = true
     @State private var refreshing = false
     @State private var error: String?
+    @State private var selectedSleepStage: SleepStageSelection?
 
     init(initialCategory: HealthArchiveCategory) {
         _category = State(initialValue: initialCategory)
