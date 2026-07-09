@@ -49,6 +49,81 @@ struct SleepDetails: Decodable {
 }
 
 
+struct HealthSleepResponse: Codable {
+    let ok: Bool
+    let date: String
+    let sleep: SleepDetails?
+}
+
+struct HealthHeartResponse: Codable {
+    struct HeartPayload: Codable {
+        let currentBPM: Int?
+        let restingBPM: Int?
+        let lastReadingAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case currentBPM = "current_bpm"
+            case restingBPM = "resting_bpm"
+            case lastReadingAt = "last_reading_at"
+        }
+    }
+
+    let ok: Bool
+    let date: String
+    let heart: HeartPayload
+}
+
+struct HealthActivityResponse: Codable {
+    struct ActivityPayload: Codable {
+        let steps: Int?
+        let calories: Int?
+    }
+
+    let ok: Bool
+    let date: String
+    let activity: ActivityPayload
+}
+
+struct HealthReadinessResponse: Codable {
+    let ok: Bool
+    let date: String
+    let readiness: String
+    let todayPlan: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok, date, readiness
+        case todayPlan = "today_plan"
+    }
+}
+
+struct HealthSummaryResponse: Codable {
+    let ok: Bool
+    let date: String
+    let dashboard: Dashboard
+}
+
+struct DeviceStatusResponse: Codable {
+    let ok: Bool
+    let connected: Bool?
+    let needsReauth: Bool?
+    let device: String?
+    let batteryLevel: Int?
+    let batteryStatus: String?
+    let lastSyncTime: String?
+    let message: String
+    let reauthURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, connected, device, message
+        case needsReauth = "needs_reauth"
+        case batteryLevel = "battery_level"
+        case batteryStatus = "battery_status"
+        case lastSyncTime = "last_sync_time"
+        case reauthURL = "reauth_url"
+    }
+}
+
+
 actor APIClient {
     static let shared = APIClient()
     private let decoder = JSONDecoder()
@@ -102,11 +177,43 @@ actor APIClient {
     }
 
     func connectionStatus() async throws -> ConnectionStatusResponse { try await request("api/ios/connection") }
+    private func archivePath(_ kind: String, date: String, force: Bool) throws -> String {
+        guard let encodedDate = date.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            throw URLError(.badURL)
+        }
+        return "api/ios/health/\(kind)?date=\(encodedDate)" + (force ? "&force=1" : "")
+    }
+
+    func healthSummary(date: String, force: Bool = false) async throws -> HealthSummaryResponse {
+        try await request(try archivePath("summary", date: date, force: force))
+    }
+
+    func healthSleep(date: String, force: Bool = false) async throws -> HealthSleepResponse {
+        try await request(try archivePath("sleep", date: date, force: force))
+    }
+
+    func healthHeart(date: String, force: Bool = false) async throws -> HealthHeartResponse {
+        try await request(try archivePath("heart", date: date, force: force))
+    }
+
+    func healthActivity(date: String, force: Bool = false) async throws -> HealthActivityResponse {
+        try await request(try archivePath("activity", date: date, force: force))
+    }
+
+    func healthReadiness(date: String, force: Bool = false) async throws -> HealthReadinessResponse {
+        try await request(try archivePath("readiness", date: date, force: force))
+    }
+
+    func deviceStatus(force: Bool = false) async throws -> DeviceStatusResponse {
+        try await request(force ? "api/ios/device/status?force=1" : "api/ios/device/status")
+    }
+
     func healthDay(date: String) async throws -> HealthDayResponse {
         guard let encodedDate = date.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
             throw URLError(.badURL)
         }
         return try await request("api/ios/health/day?date=\(encodedDate)")
     }
+
     func saveRefreshToken(_ token: String) async throws -> ConnectionStatusResponse { try await request("api/ios/connection/token", method: "POST", body: ["refresh_token": token]) }
 }

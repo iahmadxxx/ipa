@@ -250,41 +250,105 @@ private struct MoreRow: View {
 
 enum HealthArchiveCategory: String, CaseIterable, Identifiable {
     case summary, sleep, heart, activity, readiness
+
     var id: String { rawValue }
+
     var title: String {
-        switch self { case .summary: return "الملخص"; case .sleep: return "النوم"; case .heart: return "النبض"; case .activity: return "النشاط"; case .readiness: return "الجاهزية" }
+        switch self {
+        case .summary: return "الملخص"
+        case .sleep: return "النوم"
+        case .heart: return "النبض"
+        case .activity: return "النشاط"
+        case .readiness: return "الجاهزية"
+        }
     }
+
     var icon: String {
-        switch self { case .summary: return "square.grid.2x2.fill"; case .sleep: return "moon.stars.fill"; case .heart: return "heart.fill"; case .activity: return "figure.walk"; case .readiness: return "bolt.heart.fill" }
+        switch self {
+        case .summary: return "square.grid.2x2.fill"
+        case .sleep: return "moon.stars.fill"
+        case .heart: return "heart.fill"
+        case .activity: return "figure.walk"
+        case .readiness: return "bolt.heart.fill"
+        }
+    }
+}
+
+private enum HealthArchiveLocalCache {
+    private static func key(_ category: HealthArchiveCategory, _ date: String) -> String {
+        "fitbitair.archive.\(category.rawValue).\(date)"
+    }
+
+    static func load<T: Decodable>(_ type: T.Type, category: HealthArchiveCategory, date: String) -> T? {
+        guard let data = UserDefaults.standard.data(forKey: key(category, date)) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+
+    static func save<T: Encodable>(_ value: T, category: HealthArchiveCategory, date: String) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        UserDefaults.standard.set(data, forKey: key(category, date))
     }
 }
 
 struct HealthArchiveView: View {
     @State private var category: HealthArchiveCategory
     @State private var selectedDate = Date()
-    @State private var response: HealthDayResponse?
+
+    @State private var summary: HealthSummaryResponse?
+    @State private var sleep: HealthSleepResponse?
+    @State private var heart: HealthHeartResponse?
+    @State private var activity: HealthActivityResponse?
+    @State private var readiness: HealthReadinessResponse?
+
     @State private var loading = true
+    @State private var refreshing = false
     @State private var error: String?
 
-    init(initialCategory: HealthArchiveCategory) { _category = State(initialValue: initialCategory) }
+    init(initialCategory: HealthArchiveCategory) {
+        _category = State(initialValue: initialCategory)
+    }
 
     var body: some View {
         ZStack {
             AppBackground()
+
             ScrollView {
                 VStack(spacing: 16) {
                     categoryPicker
                     dateNavigator
-                    if loading { LoadingStateView(text: "أحدث بيانات هذا اليوم…") }
-                    else if let error { ErrorBanner(message: error) }
-                    else if let response { content(response) }
-                }.padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 30)
-            }.refreshable { await load() }
+
+                    if hasVisibleData {
+                        content
+                    } else if loading {
+                        LoadingStateView(text: "أحدث بيانات \(category.title)…")
+                    }
+
+                    if refreshing && hasVisibleData {
+                        Label("جاري تحديث \(category.title)…", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                            .foregroundStyle(FitTheme.accent)
+                    }
+
+                    if let error {
+                        ErrorBanner(message: error)
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 12)
+                .padding(.bottom, 30)
+            }
+            .refreshable { await load(force: true) }
         }
         .navigationTitle("السجل الصحي")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
-        .onChange(of: selectedDate) { _, _ in Task { await load() } }
+        .task { await load(useLocalCache: true) }
+        .onChange(of: selectedDate) { _, _ in
+            clearVisibleState()
+            Task { await load(useLocalCache: true) }
+        }
+        .onChange(of: category) { _, _ in
+            Task { await load(useLocalCache: true) }
+        }
     }
 
     private var categoryPicker: some View {
@@ -292,15 +356,26 @@ struct HealthArchiveView: View {
             HStack(spacing: 8) {
                 ForEach(HealthArchiveCategory.allCases) { item in
                     Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { category = item }
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            category = item
+                        }
                     } label: {
                         Label(item.title, systemImage: item.icon)
                             .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 13).padding(.vertical, 10)
-                            .background(category == item ? FitTheme.accent.opacity(0.18) : FitTheme.card, in: Capsule())
-                            .overlay(Capsule().stroke(category == item ? FitTheme.accent.opacity(0.4) : FitTheme.stroke))
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 10)
+                            .background(
+                                category == item ? FitTheme.accent.opacity(0.18) : FitTheme.card,
+                                in: Capsule()
+                            )
+                            .overlay(
+                                Capsule().stroke(
+                                    category == item ? FitTheme.accent.opacity(0.4) : FitTheme.stroke
+                                )
+                            )
                             .foregroundStyle(category == item ? FitTheme.accent : .white.opacity(0.6))
-                    }.buttonStyle(.plain)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -309,49 +384,72 @@ struct HealthArchiveView: View {
     private var dateNavigator: some View {
         GlassCard(padding: 12) {
             HStack {
-                Button { changeDate(-1) } label: { Image(systemName: "chevron.right").frame(width: 38, height: 38).background(FitTheme.cardStrong, in: Circle()) }
+                Button { changeDate(-1) } label: {
+                    Image(systemName: "chevron.right")
+                        .frame(width: 38, height: 38)
+                        .background(FitTheme.cardStrong, in: Circle())
+                }
+
                 Spacer()
+
                 DatePicker("", selection: $selectedDate, in: ...Date(), displayedComponents: .date)
-                    .labelsHidden().datePickerStyle(.compact).tint(FitTheme.accent)
+                    .labelsHidden()
+                    .datePickerStyle(.compact)
+                    .tint(FitTheme.accent)
+
                 Spacer()
-                Button { changeDate(1) } label: { Image(systemName: "chevron.left").frame(width: 38, height: 38).background(FitTheme.cardStrong, in: Circle()) }
-                    .disabled(Calendar.current.isDateInToday(selectedDate)).opacity(Calendar.current.isDateInToday(selectedDate) ? 0.3 : 1)
-            }.foregroundStyle(.white)
+
+                Button { changeDate(1) } label: {
+                    Image(systemName: "chevron.left")
+                        .frame(width: 38, height: 38)
+                        .background(FitTheme.cardStrong, in: Circle())
+                }
+                .disabled(Calendar.current.isDateInToday(selectedDate))
+                .opacity(Calendar.current.isDateInToday(selectedDate) ? 0.3 : 1)
+            }
+            .foregroundStyle(.white)
         }
     }
 
-    @ViewBuilder private func content(_ r: HealthDayResponse) -> some View {
+    @ViewBuilder
+    private var content: some View {
         switch category {
-        case .summary: summaryContent(r)
-        case .sleep: sleepContent(r)
-        case .heart: heartContent(r)
-        case .activity: activityContent(r)
-        case .readiness: readinessContent(r)
+        case .summary:
+            if let summary { summaryContent(summary.dashboard) }
+        case .sleep:
+            if let sleep { sleepContent(sleep) }
+        case .heart:
+            if let heart { heartContent(heart) }
+        case .activity:
+            if let activity { activityContent(activity) }
+        case .readiness:
+            if let readiness { readinessContent(readiness) }
         }
     }
 
-    private func summaryContent(_ r: HealthDayResponse) -> some View {
+    private func summaryContent(_ d: Dashboard) -> some View {
         VStack(spacing: 14) {
             HStack(spacing: 12) {
-                MetricCard(systemIcon: "heart.fill", title: "نبض الراحة", value: r.dashboard.restingHR.map { "\($0) BPM" } ?? "—", tint: .red)
-                MetricCard(systemIcon: "moon.fill", title: "النوم", value: minutesText(r.dashboard.sleepMinutes), tint: FitTheme.accentPurple)
+                MetricCard(systemIcon: "heart.fill", title: "نبض الراحة", value: d.restingHR.map { "\($0) BPM" } ?? "—", tint: .red)
+                MetricCard(systemIcon: "moon.fill", title: "النوم", value: minutesText(d.sleepMinutes), tint: FitTheme.accentPurple)
             }
             HStack(spacing: 12) {
-                MetricCard(systemIcon: "figure.walk", title: "الخطوات", value: r.dashboard.steps.map(String.init) ?? "—", tint: FitTheme.accent)
-                MetricCard(systemIcon: "flame.fill", title: "السعرات", value: r.dashboard.calories.map { "\($0)" } ?? "—", tint: .orange)
+                MetricCard(systemIcon: "figure.walk", title: "الخطوات", value: d.steps.map(String.init) ?? "—", tint: FitTheme.accent)
+                MetricCard(systemIcon: "flame.fill", title: "السعرات", value: d.calories.map { "\($0)" } ?? "—", tint: .orange)
             }
-            readinessContent(r)
+            readinessCard(readiness: d.readiness, plan: d.todayPlan)
         }
     }
 
-    private func sleepContent(_ r: HealthDayResponse) -> some View {
+    private func sleepContent(_ r: HealthSleepResponse) -> some View {
         VStack(spacing: 14) {
             GlassCard {
                 VStack(spacing: 8) {
                     Image(systemName: "moon.stars.fill").font(.system(size: 34)).foregroundStyle(FitTheme.accentPurple)
-                    Text(minutesText(r.sleep?.totalMinutes ?? r.dashboard.sleepMinutes)).font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                    Text(minutesText(r.sleep?.totalMinutes)).font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(.white)
                     Text("إجمالي النوم").foregroundStyle(.white.opacity(0.55))
-                }.frame(maxWidth: .infinity)
+                }
+                .frame(maxWidth: .infinity)
             }
             HStack(spacing: 10) {
                 stageCard("عميق", r.sleep?.deepMinutes ?? 0, FitTheme.accentBlue)
@@ -364,31 +462,39 @@ struct HealthArchiveView: View {
         }
     }
 
-    private func heartContent(_ r: HealthDayResponse) -> some View {
+    private func heartContent(_ r: HealthHeartResponse) -> some View {
         VStack(spacing: 14) {
             HStack(spacing: 12) {
-                MetricCard(systemIcon: "heart.fill", title: "النبض اللحظي", value: r.dashboard.currentHR.map { "\($0) BPM" } ?? "غير متاح", tint: .red, subtitle: r.dashboard.currentHRTime)
-                MetricCard(systemIcon: "bed.double.fill", title: "نبض الراحة", value: r.dashboard.restingHR.map { "\($0) BPM" } ?? "غير متاح", tint: FitTheme.danger)
+                MetricCard(systemIcon: "heart.fill", title: "النبض اللحظي", value: r.heart.currentBPM.map { "\($0) BPM" } ?? "غير متاح", tint: .red, subtitle: r.heart.lastReadingAt)
+                MetricCard(systemIcon: "bed.double.fill", title: "نبض الراحة", value: r.heart.restingBPM.map { "\($0) BPM" } ?? "غير متاح", tint: FitTheme.danger)
             }
-            GlassCard { Text(Calendar.current.isDateInToday(selectedDate) ? "النبض اللحظي يتحدث من أحدث قراءة متاحة من ساعتك." : "للأيام السابقة يعرض التطبيق نبض الراحة المحفوظ لذلك اليوم؛ القراءة اللحظية متاحة لليوم الحالي فقط.").font(.footnote).foregroundStyle(.white.opacity(0.58)) }
+            GlassCard {
+                Text(Calendar.current.isDateInToday(selectedDate) ? "النبض اللحظي يتحدث من أحدث قراءة متاحة من ساعتك." : "للأيام السابقة يعرض التطبيق نبض الراحة لذلك اليوم.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.58))
+            }
         }
     }
 
-    private func activityContent(_ r: HealthDayResponse) -> some View {
+    private func activityContent(_ r: HealthActivityResponse) -> some View {
         HStack(spacing: 12) {
-            MetricCard(systemIcon: "figure.walk", title: "الخطوات", value: r.dashboard.steps.map(String.init) ?? "—", tint: FitTheme.accent)
-            MetricCard(systemIcon: "flame.fill", title: "السعرات", value: r.dashboard.calories.map { "\($0)" } ?? "—", tint: .orange)
+            MetricCard(systemIcon: "figure.walk", title: "الخطوات", value: r.activity.steps.map(String.init) ?? "—", tint: FitTheme.accent)
+            MetricCard(systemIcon: "flame.fill", title: "السعرات", value: r.activity.calories.map { "\($0)" } ?? "—", tint: .orange)
         }
     }
 
-    private func readinessContent(_ r: HealthDayResponse) -> some View {
+    private func readinessContent(_ r: HealthReadinessResponse) -> some View {
+        readinessCard(readiness: r.readiness, plan: r.todayPlan)
+    }
+
+    private func readinessCard(readiness: String, plan: String) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 12) {
                 Label("تحليل الجاهزية", systemImage: "bolt.heart.fill").font(.headline).foregroundStyle(FitTheme.warning)
-                Text(r.dashboard.readiness).font(.subheadline).foregroundStyle(.white.opacity(0.78)).textSelection(.enabled)
+                Text(readiness).font(.subheadline).foregroundStyle(.white.opacity(0.78)).textSelection(.enabled)
                 Divider().overlay(Color.white.opacity(0.08))
                 Label("خطة ذلك اليوم", systemImage: "scope").font(.headline).foregroundStyle(FitTheme.accent)
-                Text(r.dashboard.todayPlan).font(.subheadline).foregroundStyle(.white.opacity(0.78)).textSelection(.enabled)
+                Text(plan).font(.subheadline).foregroundStyle(.white.opacity(0.78)).textSelection(.enabled)
             }
         }
     }
@@ -403,20 +509,131 @@ struct HealthArchiveView: View {
         }
     }
 
+    private var hasVisibleData: Bool {
+        switch category {
+        case .summary: return summary != nil
+        case .sleep: return sleep != nil
+        case .heart: return heart != nil
+        case .activity: return activity != nil
+        case .readiness: return readiness != nil
+        }
+    }
+
+    private func dateString(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f.string(from: date)
+    }
+
+    private func load(force: Bool = false, useLocalCache: Bool = false) async {
+        let date = dateString(selectedDate)
+        error = nil
+
+        if useLocalCache, restoreLocalCache(category: category, date: date) {
+            loading = false
+            refreshing = true
+        } else if !hasVisibleData {
+            loading = true
+        }
+
+        do {
+            try await fetch(category: category, date: date, force: force, updateVisible: true)
+            loading = false
+            refreshing = false
+            prefetchAdjacentDays(for: category)
+        } catch {
+            if !hasVisibleData { self.error = error.localizedDescription }
+            loading = false
+            refreshing = false
+        }
+    }
+
+    private func fetch(
+        category: HealthArchiveCategory,
+        date: String,
+        force: Bool,
+        updateVisible: Bool
+    ) async throws {
+        switch category {
+        case .summary:
+            let value = try await APIClient.shared.healthSummary(date: date, force: force)
+            if updateVisible { summary = value }
+            HealthArchiveLocalCache.save(value, category: category, date: date)
+
+        case .sleep:
+            let value = try await APIClient.shared.healthSleep(date: date, force: force)
+            if updateVisible { sleep = value }
+            HealthArchiveLocalCache.save(value, category: category, date: date)
+
+        case .heart:
+            let value = try await APIClient.shared.healthHeart(date: date, force: force)
+            if updateVisible { heart = value }
+            HealthArchiveLocalCache.save(value, category: category, date: date)
+
+        case .activity:
+            let value = try await APIClient.shared.healthActivity(date: date, force: force)
+            if updateVisible { activity = value }
+            HealthArchiveLocalCache.save(value, category: category, date: date)
+
+        case .readiness:
+            let value = try await APIClient.shared.healthReadiness(date: date, force: force)
+            if updateVisible { readiness = value }
+            HealthArchiveLocalCache.save(value, category: category, date: date)
+        }
+    }
+
+    private func restoreLocalCache(category: HealthArchiveCategory, date: String) -> Bool {
+        switch category {
+        case .summary:
+            guard let value = HealthArchiveLocalCache.load(HealthSummaryResponse.self, category: category, date: date) else { return false }
+            summary = value
+        case .sleep:
+            guard let value = HealthArchiveLocalCache.load(HealthSleepResponse.self, category: category, date: date) else { return false }
+            sleep = value
+        case .heart:
+            guard let value = HealthArchiveLocalCache.load(HealthHeartResponse.self, category: category, date: date) else { return false }
+            heart = value
+        case .activity:
+            guard let value = HealthArchiveLocalCache.load(HealthActivityResponse.self, category: category, date: date) else { return false }
+            activity = value
+        case .readiness:
+            guard let value = HealthArchiveLocalCache.load(HealthReadinessResponse.self, category: category, date: date) else { return false }
+            readiness = value
+        }
+        return true
+    }
+
+    private func prefetchAdjacentDays(for category: HealthArchiveCategory) {
+        let currentDate = selectedDate
+        let dates = [-1, 1].compactMap { Calendar.current.date(byAdding: .day, value: $0, to: currentDate) }
+            .filter { $0 <= Date() }
+
+        for day in dates {
+            let date = dateString(day)
+            Task(priority: .utility) {
+                try? await fetch(category: category, date: date, force: false, updateVisible: false)
+            }
+        }
+    }
+
+    private func clearVisibleState() {
+        summary = nil
+        sleep = nil
+        heart = nil
+        activity = nil
+        readiness = nil
+        error = nil
+    }
+
     private func minutesText(_ value: Int?) -> String {
         guard let m = value, m > 0 else { return "—" }
         return "\(m / 60)س \(m % 60)د"
     }
 
     private func changeDate(_ days: Int) {
-        if let d = Calendar.current.date(byAdding: .day, value: days, to: selectedDate), d <= Date() { selectedDate = d }
-    }
-
-    private func load() async {
-        loading = true; error = nil
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX")
-        do { response = try await APIClient.shared.healthDay(date: f.string(from: selectedDate)) }
-        catch { self.error = error.localizedDescription }
-        loading = false
+        if let d = Calendar.current.date(byAdding: .day, value: days, to: selectedDate), d <= Date() {
+            selectedDate = d
+        }
     }
 }

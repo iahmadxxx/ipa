@@ -29,6 +29,8 @@ struct HomeView: View {
     @State private var loading = false
     @State private var error: String?
     @State private var selectedDate = Date()
+    @State private var deviceStatus: DeviceStatusResponse?
+    @State private var deviceStatusError: String?
 
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
@@ -37,6 +39,9 @@ struct HomeView: View {
             VStack(spacing: 18) {
                 heroHeader
                 dateSelector
+                if isToday {
+                    deviceSyncCard
+                }
 
                 if let dashboard {
                     readinessHero(dashboard)
@@ -57,8 +62,16 @@ struct HomeView: View {
         }
         .background(Color.clear)
         .toolbar(.hidden, for: .navigationBar)
-        .refreshable { await load(force: true) }
-        .task { await load(useLocalCache: true) }
+        .refreshable {
+            async let dashboardTask: Void = load(force: true)
+            async let deviceTask: Void = loadDeviceStatus(force: true)
+            _ = await (dashboardTask, deviceTask)
+        }
+        .task {
+            async let dashboardTask: Void = load(useLocalCache: true)
+            async let deviceTask: Void = loadDeviceStatus()
+            _ = await (dashboardTask, deviceTask)
+        }
     }
 
     private var heroHeader: some View {
@@ -76,7 +89,11 @@ struct HomeView: View {
             }
             Spacer()
             CompactIconButton(systemName: loading ? "hourglass" : "arrow.clockwise") {
-                Task { await load(force: true) }
+                Task {
+                    async let dashboardTask: Void = load(force: true)
+                    async let deviceTask: Void = loadDeviceStatus(force: true)
+                    _ = await (dashboardTask, deviceTask)
+                }
             }
             .disabled(loading)
         }
@@ -108,6 +125,63 @@ struct HomeView: View {
         }
         .onChange(of: selectedDate) { _, _ in
             Task { await load(useLocalCache: true) }
+        }
+    }
+
+    private var deviceSyncCard: some View {
+        GlassCard(padding: 14) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(FitTheme.accent.opacity(0.14))
+                        .frame(width: 48, height: 48)
+
+                    Image(systemName: batteryIcon)
+                        .font(.title3.bold())
+                        .foregroundStyle(batteryColor)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("آخر مزامنة للسوار")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.5))
+
+                    Text(lastSyncExactText)
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.white)
+
+                    if let device = deviceStatus?.device {
+                        Text(device)
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.38))
+                    }
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("شحن السوار")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.5))
+
+                    Text(batteryText)
+                        .font(.title3.bold())
+                        .foregroundStyle(batteryColor)
+
+                    if deviceStatus?.needsReauth == true {
+                        Text("جدد الربط")
+                            .font(.caption2.bold())
+                            .foregroundStyle(FitTheme.warning)
+                    }
+                }
+            }
+
+            if let deviceStatusError {
+                Text(deviceStatusError)
+                    .font(.caption)
+                    .foregroundStyle(FitTheme.warning)
+                    .padding(.top, 8)
+            }
         }
     }
 
@@ -234,6 +308,58 @@ struct HomeView: View {
         }
 
         loading = false
+    }
+
+    private func loadDeviceStatus(force: Bool = false) async {
+        do {
+            deviceStatus = try await APIClient.shared.deviceStatus(force: force)
+            deviceStatusError = nil
+        } catch {
+            deviceStatusError = error.localizedDescription
+        }
+    }
+
+    private var batteryText: String {
+        guard let level = deviceStatus?.batteryLevel else { return "—" }
+        return "\(level)%"
+    }
+
+    private var batteryIcon: String {
+        guard let level = deviceStatus?.batteryLevel else { return "battery.0percent" }
+        switch level {
+        case 80...: return "battery.100percent"
+        case 55..<80: return "battery.75percent"
+        case 30..<55: return "battery.50percent"
+        case 10..<30: return "battery.25percent"
+        default: return "battery.0percent"
+        }
+    }
+
+    private var batteryColor: Color {
+        guard let level = deviceStatus?.batteryLevel else { return .white.opacity(0.45) }
+        switch level {
+        case 50...: return FitTheme.positive
+        case 20..<50: return FitTheme.warning
+        default: return FitTheme.danger
+        }
+    }
+
+    private var lastSyncExactText: String {
+        guard let value = deviceStatus?.lastSyncTime else {
+            return deviceStatus?.needsReauth == true ? "يحتاج تجديد الربط" : "غير متاح"
+        }
+
+        let parser = ISO8601DateFormatter()
+        guard let date = parser.date(from: value) else { return value }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ar_QA")
+        formatter.timeZone = TimeZone(identifier: "Asia/Qatar")
+        formatter.dateFormat = Calendar.current.isDateInToday(date)
+            ? "اليوم، h:mm:ss a"
+            : "d MMM، h:mm:ss a"
+
+        return formatter.string(from: date)
     }
 
     private var isToday: Bool { Calendar.current.isDateInToday(selectedDate) }
