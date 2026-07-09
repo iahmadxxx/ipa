@@ -33,7 +33,7 @@ private enum LiveHeartLocalCache {
     }
 
     static func save(_ value: LiveHeartResponse) {
-        guard value.bpm != nil, value.measuredAt != nil,
+        guard value.bpm != nil,
               let data = try? JSONEncoder().encode(value) else { return }
         UserDefaults.standard.set(data, forKey: key)
     }
@@ -387,17 +387,18 @@ struct HomeView: View {
             let value = try await APIClient.shared.liveHeart()
             liveHeartMessage = value.message
 
-            if value.ok, value.bpm != nil, value.measuredAt != nil {
+            if value.ok, value.bpm != nil {
+                // BPM from /heart/live is valid even when Google does not provide measured_at.
+                // Never replace it with Dashboard data.
                 liveHeart = value
                 LiveHeartLocalCache.save(value)
             } else if value.status == "no_data" {
-                // No real reading: do not invent one and do not use Dashboard fallback.
                 if liveHeart == nil {
                     liveHeartMessage = value.message
                 }
             }
         } catch {
-            // Keep last valid /heart/live reading, clearly timestamped as old.
+            // Keep last valid /heart/live reading only.
             liveHeartMessage = "تعذر جلب قراءة أحدث الآن."
         }
     }
@@ -415,9 +416,11 @@ struct HomeView: View {
         guard let status = deviceStatus else {
             return deviceStatusError ?? "جاري فحص حالة السوار…"
         }
-        if status.status == "ok", let sync = status.lastSyncTime {
+
+        if let sync = status.lastSyncTime, !sync.isEmpty {
             return "آخر مزامنة: \(formatFullHealthTime(sync))"
         }
+
         return status.message
     }
 
@@ -439,6 +442,7 @@ struct HomeView: View {
 
     private var liveHeartTitle: String {
         guard let value = liveHeart, value.bpm != nil else { return "النبض" }
+        guard value.measuredAt != nil else { return "آخر نبض متاح" }
         return effectiveHeartAgeSeconds(value) <= 120 ? "النبض الآن" : "آخر نبض متاح"
     }
 
@@ -448,8 +452,12 @@ struct HomeView: View {
     }
 
     private var liveHeartSubtitle: String? {
-        guard let value = liveHeart, let measuredAt = value.measuredAt else {
-            return liveHeartMessage ?? "لا توجد قراءة موثقة"
+        guard let value = liveHeart, value.bpm != nil else {
+            return liveHeartMessage ?? "لا توجد قراءة نبض متاحة"
+        }
+
+        guard let measuredAt = value.measuredAt else {
+            return "أحدث قراءة متاحة • وقت القراءة غير متوفر"
         }
 
         let age = effectiveHeartAgeSeconds(value)
