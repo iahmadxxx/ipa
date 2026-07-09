@@ -78,9 +78,11 @@ jobs:
           set_plist_value "CFBundleExecutable" string "FitbitAir"
           set_plist_value "CFBundlePackageType" string "APPL"
 
+          # Add physical icon files directly to the .app so GBox can read them.
           cp "$ICON_SOURCE_2X" "$APP_PATH/AppIcon60x60@2x.png"
           cp "$ICON_SOURCE_3X" "$APP_PATH/AppIcon60x60@3x.png"
 
+          # Recreate icon metadata explicitly.
           "$PLISTBUDDY" -c "Delete :CFBundleIconFiles" "$PLIST" 2>/dev/null || true
           "$PLISTBUDDY" -c "Add :CFBundleIconFiles array" "$PLIST"
           "$PLISTBUDDY" -c "Add :CFBundleIconFiles:0 string AppIcon60x60" "$PLIST"
