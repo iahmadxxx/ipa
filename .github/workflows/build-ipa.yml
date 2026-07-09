@@ -26,7 +26,7 @@ jobs:
           PROJECT="FitbitAir-iOS/FitbitAir.xcodeproj"
           BUILD_DIR="$RUNNER_TEMP/FitbitAirBuild"
 
-          mkdir -p "$BUILD_DIR"
+          rm -rf "$BUILD_DIR"
 
           xcodebuild \
             -project "$PROJECT" \
@@ -37,7 +37,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            clean build
+            build
 
           APP_PATH="$BUILD_DIR/FitbitAir.app"
 
@@ -47,6 +47,7 @@ jobs:
             exit 1
           fi
 
+          rm -rf "$RUNNER_TEMP/ipa"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/FitbitAir.app"
 
