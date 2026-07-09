@@ -28,7 +28,7 @@ struct HealthDayResponse: Decodable {
     let sleep: SleepDetails?
 }
 
-struct SleepDetails: Decodable {
+struct SleepDetails: Codable {
     let start: String?
     let end: String?
     let totalMinutes: Int?
