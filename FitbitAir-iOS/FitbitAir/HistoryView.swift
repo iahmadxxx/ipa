@@ -44,6 +44,9 @@ struct HistoryView: View {
             }
         }
         .navigationTitle("سجل التمارين")
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+        .foregroundStyle(.white)
         .searchable(text: $search, prompt: "ابحث بالتمرين أو التاريخ")
         .task { await load() }
         .refreshable { await load() }

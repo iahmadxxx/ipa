@@ -5,7 +5,7 @@ struct InsightsView: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(spacing: 14) {
                 if let data {
                     InsightCard(icon: "⚡️", title: "الجاهزية", text: data.readiness)
@@ -21,12 +21,13 @@ struct InsightsView: View {
 
                 if let errorMessage {
                     Text(errorMessage)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(FitTheme.danger)
                 }
             }
             .padding()
         }
         .navigationTitle("التحليلات")
+        .background(Color.clear)
         .task { await load() }
         .refreshable { await load() }
     }

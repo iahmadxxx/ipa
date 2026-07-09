@@ -53,6 +53,9 @@ struct WorkoutView: View {
             }
         }
         .navigationTitle("التمارين")
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+        .foregroundStyle(.white)
         .toolbar {
             Button {
                 Task { await load() }
@@ -160,7 +163,7 @@ struct ExerciseSessionView: View {
                     Text(exercise)
                         .font(.title3.bold())
                     Text(day.label)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.5))
                 }
 
                 if let context {
@@ -177,11 +180,13 @@ struct ExerciseSessionView: View {
                     HStack(spacing: 10) {
                         TextField("الوزن", text: $weight)
                             .keyboardType(.decimalPad)
-                            .textFieldStyle(.roundedBorder)
+                            .padding(14)
+                            .background(FitTheme.cardStrong, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                         TextField("العدات", text: $reps)
                             .keyboardType(.numberPad)
-                            .textFieldStyle(.roundedBorder)
+                            .padding(14)
+                            .background(FitTheme.cardStrong, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
 
                     Button {
@@ -191,8 +196,7 @@ struct ExerciseSessionView: View {
                             .frame(maxWidth: .infinity)
                             .padding()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
+                    .buttonStyle(PrimaryButtonStyle())
 
                     TodaySetsCard(sets: context.todaySets) { set in
                         editingSet = set
@@ -214,6 +218,7 @@ struct ExerciseSessionView: View {
             .padding()
         }
         .navigationTitle("تسجيل تمرين")
+        .background(AppBackground())
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .refreshable { await load() }
