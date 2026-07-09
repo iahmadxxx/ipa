@@ -104,9 +104,9 @@ struct HealthSummaryResponse: Codable {
 
 struct DeviceStatusResponse: Codable {
     let ok: Bool
-    let connected: Bool?
-    let needsReauth: Bool?
-    let status: String?
+    let status: String
+    let connected: Bool
+    let needsReauth: Bool
     let device: String?
     let batteryLevel: Int?
     let batteryStatus: String?
@@ -115,7 +115,7 @@ struct DeviceStatusResponse: Codable {
     let reauthURL: String?
 
     enum CodingKeys: String, CodingKey {
-        case ok, connected, device, message, status
+        case ok, status, connected, device, message
         case needsReauth = "needs_reauth"
         case batteryLevel = "battery_level"
         case batteryStatus = "battery_status"
@@ -124,21 +124,53 @@ struct DeviceStatusResponse: Codable {
     }
 }
 
-
-struct LiveHeartResponse: Decodable {
+struct LiveHeartResponse: Codable {
     let ok: Bool
+    let status: String
     let bpm: Int?
     let measuredAt: String?
     let ageSeconds: Int?
     let stale: Bool
-    let needsReauth: Bool?
+    let needsReauth: Bool
     let message: String
 
     enum CodingKeys: String, CodingKey {
-        case ok, bpm, stale, message
+        case ok, status, bpm, stale, message
         case measuredAt = "measured_at"
         case ageSeconds = "age_seconds"
         case needsReauth = "needs_reauth"
+    }
+}
+
+struct DiagnosticsResponse: Decodable {
+    struct Service: Decodable {
+        let status: String
+        let message: String
+        let batteryLevel: Int?
+        let lastSyncTime: String?
+        let bpm: Int?
+        let measuredAt: String?
+        let ageSeconds: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case status, message, bpm
+            case batteryLevel = "battery_level"
+            case lastSyncTime = "last_sync_time"
+            case measuredAt = "measured_at"
+            case ageSeconds = "age_seconds"
+        }
+    }
+
+    let ok: Bool
+    let railway: Service
+    let token: Service
+    let device: Service
+    let heart: Service
+    let checkedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok, railway, token, device, heart
+        case checkedAt = "checked_at"
     }
 }
 
@@ -235,6 +267,10 @@ actor APIClient {
     }
     func liveHeart() async throws -> LiveHeartResponse {
         try await request("api/ios/heart/live")
+    }
+
+    func diagnostics() async throws -> DiagnosticsResponse {
+        try await request("api/ios/diagnostics")
     }
 
 

@@ -122,6 +122,7 @@ struct MoreView: View {
                 VStack(spacing: 2) {
                     NavigationLink { InsightsView() } label: { MoreRow(icon: "chart.xyaxis.line", tint: FitTheme.accentBlue, title: "كل التحليلات", subtitle: "التقدم، التوازن، الأوزان والتقرير") }
                     NavigationLink { CoachView() } label: { MoreRow(icon: "sparkles", tint: FitTheme.accentPurple, title: "المدرب الذكي", subtitle: "اسأل عن صحتك وتمرينك الحالي") }
+                    NavigationLink { ConnectionDiagnosticsView() } label: { MoreRow(icon: "stethoscope", tint: FitTheme.warning, title: "تشخيص الاتصال", subtitle: "Railway، التوكن، السوار والنبض") }
 
                     Button {
                         Task { await rebuildAnalytics() }
@@ -245,6 +246,136 @@ private struct MoreRow: View {
             Spacer()
             if showsChevron { Image(systemName: "chevron.left").font(.caption.bold()).foregroundStyle(.white.opacity(0.28)) }
         }.padding(.horizontal, 10).padding(.vertical, 10).contentShape(Rectangle())
+    }
+}
+
+struct ConnectionDiagnosticsView: View {
+    @State private var result: DiagnosticsResponse?
+    @State private var loading = false
+    @State private var error: String?
+
+    var body: some View {
+        ZStack {
+            AppBackground()
+
+            ScrollView {
+                VStack(spacing: 14) {
+                    if let result {
+                        DiagnosticRow(title: "Railway", icon: "server.rack", service: result.railway)
+                        DiagnosticRow(title: "Google Health Token", icon: "key.fill", service: result.token)
+                        DiagnosticRow(title: "حالة السوار", icon: "watch.analog", service: result.device)
+                        DiagnosticRow(title: "النبض", icon: "heart.fill", service: result.heart)
+
+                        GlassCard {
+                            Text("آخر فحص: \(result.checkedAt)")
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.5))
+                        }
+                    } else if loading {
+                        LoadingStateView(text: "جاري فحص جميع الاتصالات…")
+                    }
+
+                    if let error {
+                        ErrorBanner(message: error)
+                    }
+
+                    Button {
+                        Task { await load() }
+                    } label: {
+                        Label(loading ? "جاري الفحص…" : "فحص الآن", systemImage: "arrow.clockwise")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(loading)
+                }
+                .padding(18)
+            }
+        }
+        .navigationTitle("تشخيص الاتصال")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        loading = true
+        error = nil
+        do {
+            result = try await APIClient.shared.diagnostics()
+        } catch {
+            self.error = error.localizedDescription
+        }
+        loading = false
+    }
+}
+
+private struct DiagnosticRow: View {
+    let title: String
+    let icon: String
+    let service: DiagnosticsResponse.Service
+
+    private var tint: Color {
+        switch service.status {
+        case "ok": return FitTheme.positive
+        case "reauth": return FitTheme.warning
+        default: return FitTheme.danger
+        }
+    }
+
+    private var statusText: String {
+        switch service.status {
+        case "ok": return "يعمل"
+        case "reauth": return "يحتاج ربط"
+        case "no_data": return "لا توجد بيانات"
+        default: return "غير متاح"
+        }
+    }
+
+    var body: some View {
+        GlassCard {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: icon)
+                    .font(.title3)
+                    .foregroundStyle(tint)
+                    .frame(width: 42, height: 42)
+                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(title)
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                        Spacer()
+                        Text(statusText)
+                            .font(.caption.bold())
+                            .foregroundStyle(tint)
+                    }
+
+                    Text(service.message)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.55))
+
+                    if let bpm = service.bpm {
+                        Text("النبض: \(bpm) BPM")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+
+                    if let age = service.ageSeconds {
+                        Text("عمر القراءة: \(age) ثانية")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.42))
+                    }
+
+                    if let battery = service.batteryLevel {
+                        Text("البطارية: \(battery)%")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+            }
+        }
     }
 }
 
