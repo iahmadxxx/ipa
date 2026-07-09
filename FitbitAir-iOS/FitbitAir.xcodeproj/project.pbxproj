@@ -15,6 +15,7 @@
 		000000000000000000000013 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000008 /* HistoryView.swift */; };
 		000000000000000000000014 /* CoachView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000009 /* CoachView.swift */; };
 		000000000000000000000015 /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000A /* InsightsView.swift */; };
+		000000000000000000000024 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000025 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 /* Begin PBXFileReference section */
 		000000000000000000000001 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
@@ -29,6 +30,7 @@
 		00000000000000000000000A /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
 		00000000000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		000000000000000000000018 /* FitbitAir.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FitbitAir.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000025 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 /* Begin PBXFrameworksBuildPhase section */
 		00000000000000000000001A = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
@@ -50,6 +52,7 @@
 				000000000000000000000009 /* CoachView.swift */,
 				00000000000000000000000A /* InsightsView.swift */,
 				00000000000000000000000B /* Info.plist */,
+				000000000000000000000025 /* Assets.xcassets */,
 			); path = FitbitAir; sourceTree = "<group>"; };
 		000000000000000000000017 /* Products */ = {isa = PBXGroup; children = (000000000000000000000018 /* FitbitAir.app */,); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
@@ -60,7 +63,7 @@
 		00000000000000000000001D /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel=1; LastSwiftUpdateCheck=1600; LastUpgradeCheck=1600; TargetAttributes={ 00000000000000000000001C={CreatedOnToolsVersion=16.0;}; }; }; buildConfigurationList=00000000000000000000001E; compatibilityVersion="Xcode 14.0"; developmentRegion=en; knownRegions=(en,Base); mainGroup=000000000000000000000016; productRefGroup=000000000000000000000017; projectDirPath=""; projectRoot=""; targets=(00000000000000000000001C); };
 /* End PBXProject section */
 /* Begin PBXResourcesBuildPhase section */
-		00000000000000000000001B = {isa=PBXResourcesBuildPhase; buildActionMask=2147483647; files=(); runOnlyForDeploymentPostprocessing=0; };
+		00000000000000000000001B = {isa=PBXResourcesBuildPhase; buildActionMask=2147483647; files=(000000000000000000000024 /* Assets.xcassets in Resources */,); runOnlyForDeploymentPostprocessing=0; };
 /* End PBXResourcesBuildPhase section */
 /* Begin PBXSourcesBuildPhase section */
 		000000000000000000000019 = {isa=PBXSourcesBuildPhase; buildActionMask=2147483647; files=(
@@ -79,8 +82,8 @@
 /* Begin XCBuildConfiguration section */
 		000000000000000000000020={isa=XCBuildConfiguration;buildSettings={ALWAYS_SEARCH_USER_PATHS=NO;CLANG_ENABLE_MODULES=YES;SWIFT_VERSION=5.0;};name=Debug;};
 		000000000000000000000021={isa=XCBuildConfiguration;buildSettings={ALWAYS_SEARCH_USER_PATHS=NO;CLANG_ENABLE_MODULES=YES;SWIFT_VERSION=5.0;};name=Release;};
-		000000000000000000000022={isa=XCBuildConfiguration;buildSettings={CODE_SIGN_STYLE=Automatic;CURRENT_PROJECT_VERSION=1;GENERATE_INFOPLIST_FILE=NO;INFOPLIST_FILE=FitbitAir/Info.plist;IPHONEOS_DEPLOYMENT_TARGET=17.0;MARKETING_VERSION=1.0;PRODUCT_BUNDLE_IDENTIFIER=com.ahmed.fitbitair;PRODUCT_NAME="$(TARGET_NAME)";SUPPORTED_PLATFORMS="iphoneos iphonesimulator";SWIFT_EMIT_LOC_STRINGS=YES;SWIFT_VERSION=5.0;TARGETED_DEVICE_FAMILY=1;};name=Debug;};
-		000000000000000000000023={isa=XCBuildConfiguration;buildSettings={CODE_SIGN_STYLE=Automatic;CURRENT_PROJECT_VERSION=1;GENERATE_INFOPLIST_FILE=NO;INFOPLIST_FILE=FitbitAir/Info.plist;IPHONEOS_DEPLOYMENT_TARGET=17.0;MARKETING_VERSION=1.0;PRODUCT_BUNDLE_IDENTIFIER=com.ahmed.fitbitair;PRODUCT_NAME="$(TARGET_NAME)";SUPPORTED_PLATFORMS="iphoneos iphonesimulator";SWIFT_EMIT_LOC_STRINGS=YES;SWIFT_VERSION=5.0;TARGETED_DEVICE_FAMILY=1;};name=Release;};
+		000000000000000000000022={isa=XCBuildConfiguration;buildSettings={ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon;CODE_SIGN_STYLE=Automatic;CURRENT_PROJECT_VERSION=1;GENERATE_INFOPLIST_FILE=NO;INFOPLIST_FILE=FitbitAir/Info.plist;IPHONEOS_DEPLOYMENT_TARGET=17.0;MARKETING_VERSION=1.0;PRODUCT_BUNDLE_IDENTIFIER=com.ahmed.fitbitair;PRODUCT_NAME="$(TARGET_NAME)";SUPPORTED_PLATFORMS="iphoneos iphonesimulator";SWIFT_EMIT_LOC_STRINGS=YES;SWIFT_VERSION=5.0;TARGETED_DEVICE_FAMILY=1;};name=Debug;};
+		000000000000000000000023={isa=XCBuildConfiguration;buildSettings={ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon;CODE_SIGN_STYLE=Automatic;CURRENT_PROJECT_VERSION=1;GENERATE_INFOPLIST_FILE=NO;INFOPLIST_FILE=FitbitAir/Info.plist;IPHONEOS_DEPLOYMENT_TARGET=17.0;MARKETING_VERSION=1.0;PRODUCT_BUNDLE_IDENTIFIER=com.ahmed.fitbitair;PRODUCT_NAME="$(TARGET_NAME)";SUPPORTED_PLATFORMS="iphoneos iphonesimulator";SWIFT_EMIT_LOC_STRINGS=YES;SWIFT_VERSION=5.0;TARGETED_DEVICE_FAMILY=1;};name=Release;};
 /* End XCBuildConfiguration section */
 /* Begin XCConfigurationList section */
 		00000000000000000000001E={isa=XCConfigurationList;buildConfigurations=(000000000000000000000020,000000000000000000000021);defaultConfigurationIsVisible=0;defaultConfigurationName=Release;};
