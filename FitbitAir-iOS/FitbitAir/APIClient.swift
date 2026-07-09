@@ -28,4 +28,8 @@ actor APIClient {
     func deleteHistory(id: Int) async throws { let _: SimpleResponse = try await request("api/ios/history/delete", method: "POST", body: ["id":id]) }
     func ask(_ message: String) async throws -> String { let r: CoachResponse = try await request("api/ios/coach", method: "POST", body: ["message":message]); return r.answer }
     func insights() async throws -> InsightsResponse { try await request("api/ios/insights") }
+
+    func connectionStatus() async throws -> ConnectionStatusResponse { try await request("api/ios/connection") }
+    func healthDay(date: String) async throws -> HealthDayResponse { try await request("api/ios/health/day?date=\(date)") }
+    func saveRefreshToken(_ token: String) async throws -> ConnectionStatusResponse { try await request("api/ios/connection/token", method: "POST", body: ["refresh_token": token]) }
 }
