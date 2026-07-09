@@ -31,6 +31,8 @@ struct HomeView: View {
     @State private var selectedDate = Date()
     @State private var deviceStatus: DeviceStatusResponse?
     @State private var deviceStatusError: String?
+    @State private var liveHeart: LiveHeartResponse?
+    @State private var liveHeartMessage: String?
 
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
@@ -65,12 +67,22 @@ struct HomeView: View {
         .refreshable {
             async let dashboardTask: Void = load(force: true)
             async let deviceTask: Void = loadDeviceStatus(force: true)
-            _ = await (dashboardTask, deviceTask)
+            async let heartTask: Void = loadLiveHeart()
+            _ = await (dashboardTask, deviceTask, heartTask)
         }
         .task {
             async let dashboardTask: Void = load(useLocalCache: true)
             async let deviceTask: Void = loadDeviceStatus()
-            _ = await (dashboardTask, deviceTask)
+            async let heartTask: Void = loadLiveHeart()
+            _ = await (dashboardTask, deviceTask, heartTask)
+        }
+        .task(id: isToday) {
+            guard isToday else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                if Task.isCancelled { break }
+                await loadLiveHeart()
+            }
         }
     }
 
@@ -92,7 +104,8 @@ struct HomeView: View {
                 Task {
                     async let dashboardTask: Void = load(force: true)
                     async let deviceTask: Void = loadDeviceStatus(force: true)
-                    _ = await (dashboardTask, deviceTask)
+                    async let heartTask: Void = loadLiveHeart()
+                    _ = await (dashboardTask, deviceTask, heartTask)
                 }
             }
             .disabled(loading)
@@ -176,10 +189,12 @@ struct HomeView: View {
                 }
             }
 
-            if let deviceStatusError {
-                Text(deviceStatusError)
+            if let statusMessage = deviceStatusMessage {
+                Text(statusMessage)
                     .font(.caption)
-                    .foregroundStyle(FitTheme.warning)
+                    .foregroundStyle(
+                        deviceStatus?.needsReauth == true ? FitTheme.warning : .white.opacity(0.45)
+                    )
                     .padding(.top, 8)
             }
         }
@@ -235,7 +250,13 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "مؤشراتك الآن", subtitle: "آخر بيانات متاحة من ساعتك")
             LazyVGrid(columns: columns, spacing: 10) {
-                MetricCard(systemIcon: "heart.fill", title: "النبض الآن", value: d.currentHR.map { "\($0) BPM" } ?? "—", tint: .red, subtitle: d.currentHRTime)
+                MetricCard(
+                    systemIcon: "heart.fill",
+                    title: "آخر نبض متاح",
+                    value: liveHeartBPMText(fallback: d),
+                    tint: .red,
+                    subtitle: liveHeartSubtitle(fallback: d)
+                )
                 MetricCard(systemIcon: "bed.double.fill", title: "نبض الراحة", value: d.restingHR.map { "\($0) BPM" } ?? "—", tint: .pink)
                 MetricCard(systemIcon: "moon.stars.fill", title: "النوم", value: minutes(d.sleepMinutes), tint: FitTheme.accentPurple)
                 MetricCard(systemIcon: "figure.walk", title: "الخطوات", value: d.steps.map { $0.formatted() } ?? "—", tint: FitTheme.accent)
@@ -315,8 +336,69 @@ struct HomeView: View {
             deviceStatus = try await APIClient.shared.deviceStatus(force: force)
             deviceStatusError = nil
         } catch {
-            deviceStatusError = error.localizedDescription
+            deviceStatusError = "حالة السوار غير متاحة حاليًا."
         }
+    }
+
+    private func loadLiveHeart() async {
+        guard isToday else { return }
+        do {
+            let value = try await APIClient.shared.liveHeart()
+            if value.bpm != nil {
+                liveHeart = value
+            }
+            liveHeartMessage = value.ok ? nil : value.message
+        } catch {
+            // Keep the last valid HR on screen; do not turn a transient HR failure
+            // into a home-screen server error.
+            liveHeartMessage = "تعذر جلب قراءة أحدث الآن."
+        }
+    }
+
+    private var deviceStatusMessage: String? {
+        if let status = deviceStatus {
+            if status.needsReauth == true { return status.message }
+            if status.batteryLevel == nil && status.lastSyncTime == nil { return status.message }
+            return nil
+        }
+        return deviceStatusError
+    }
+
+    private func liveHeartBPMText(fallback d: Dashboard) -> String {
+        if let bpm = liveHeart?.bpm {
+            return "\(bpm) BPM"
+        }
+        if let bpm = d.currentHR {
+            return "\(bpm) BPM"
+        }
+        return "—"
+    }
+
+    private func liveHeartSubtitle(fallback d: Dashboard) -> String? {
+        if let liveHeart, let measuredAt = liveHeart.measuredAt {
+            let time = formatHealthTime(measuredAt)
+            if liveHeart.stale {
+                return "قراءة قديمة • \(time)"
+            }
+            return "آخر قراءة • \(time)"
+        }
+
+        if let fallbackTime = d.currentHRTime {
+            return "آخر قراءة محفوظة • \(formatHealthTime(fallbackTime))"
+        }
+
+        return liveHeartMessage
+    }
+
+    private func formatHealthTime(_ value: String) -> String {
+        let parser = ISO8601DateFormatter()
+        guard let date = parser.date(from: value) else { return value }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ar_QA")
+        formatter.timeZone = TimeZone(identifier: "Asia/Qatar")
+        formatter.dateFormat = "h:mm:ss a"
+        return formatter.string(from: date)
     }
 
     private var batteryText: String {

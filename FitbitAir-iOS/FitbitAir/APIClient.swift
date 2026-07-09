@@ -106,6 +106,7 @@ struct DeviceStatusResponse: Codable {
     let ok: Bool
     let connected: Bool?
     let needsReauth: Bool?
+    let status: String?
     let device: String?
     let batteryLevel: Int?
     let batteryStatus: String?
@@ -114,12 +115,30 @@ struct DeviceStatusResponse: Codable {
     let reauthURL: String?
 
     enum CodingKeys: String, CodingKey {
-        case ok, connected, device, message
+        case ok, connected, device, message, status
         case needsReauth = "needs_reauth"
         case batteryLevel = "battery_level"
         case batteryStatus = "battery_status"
         case lastSyncTime = "last_sync_time"
         case reauthURL = "reauth_url"
+    }
+}
+
+
+struct LiveHeartResponse: Decodable {
+    let ok: Bool
+    let bpm: Int?
+    let measuredAt: String?
+    let ageSeconds: Int?
+    let stale: Bool
+    let needsReauth: Bool?
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok, bpm, stale, message
+        case measuredAt = "measured_at"
+        case ageSeconds = "age_seconds"
+        case needsReauth = "needs_reauth"
     }
 }
 
@@ -135,8 +154,15 @@ actor APIClient {
         if let body { req.setValue("application/json", forHTTPHeaderField: "Content-Type"); req.httpBody = try JSONSerialization.data(withJSONObject: body) }
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
-            let msg = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String ?? "تعذر الاتصال بالخادم"
-            throw NSError(domain: "FitbitAir", code: 1, userInfo: [NSLocalizedDescriptionKey: msg])
+            let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let msg = (payload?["error"] as? String)
+                ?? (payload?["message"] as? String)
+                ?? "تعذر الاتصال بالخادم"
+            throw NSError(
+                domain: "FitbitAir",
+                code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                userInfo: [NSLocalizedDescriptionKey: msg]
+            )
         }
         return try decoder.decode(T.self, from: data)
     }
@@ -207,6 +233,10 @@ actor APIClient {
     func deviceStatus(force: Bool = false) async throws -> DeviceStatusResponse {
         try await request(force ? "api/ios/device/status?force=1" : "api/ios/device/status")
     }
+    func liveHeart() async throws -> LiveHeartResponse {
+        try await request("api/ios/heart/live")
+    }
+
 
     func healthDay(date: String) async throws -> HealthDayResponse {
         guard let encodedDate = date.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
