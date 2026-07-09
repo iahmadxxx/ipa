@@ -28,6 +28,22 @@ struct HealthDayResponse: Decodable {
     let sleep: SleepDetails?
 }
 
+struct SleepStageInterval: Codable, Identifiable, Hashable {
+    let type: String
+    let start: String
+    let end: String
+    let durationMinutes: Int
+
+    var id: String {
+        "\(type)|\(start)|\(end)"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type, start, end
+        case durationMinutes = "duration_minutes"
+    }
+}
+
 struct SleepDetails: Codable {
     let start: String?
     let end: String?
@@ -36,6 +52,7 @@ struct SleepDetails: Codable {
     let lightMinutes: Int
     let remMinutes: Int
     let awakeMinutes: Int
+    let stages: [SleepStageInterval]?
 
     enum CodingKeys: String, CodingKey {
         case start
@@ -45,6 +62,7 @@ struct SleepDetails: Codable {
         case lightMinutes = "light_minutes"
         case remMinutes = "rem_minutes"
         case awakeMinutes = "awake_minutes"
+        case stages
     }
 }
 

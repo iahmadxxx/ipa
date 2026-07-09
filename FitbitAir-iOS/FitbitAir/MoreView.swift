@@ -4,6 +4,7 @@ struct MoreView: View {
     @State private var status: ConnectionStatusResponse?
     @State private var loading = true
     @State private var error: String?
+    @State private var selectedSleepStage: SleepStageSelection?
     @State private var showTokenEntry = false
     @State private var manualToken = ""
     @State private var rebuildingAnalytics = false
@@ -249,6 +250,186 @@ private struct MoreRow: View {
     }
 }
 
+private struct SleepStageDetailSheet: View {
+    let selection: SleepStageSelection
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            AppBackground()
+
+            ScrollView {
+                VStack(spacing: 14) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(selection.title)
+                                .font(.title.bold())
+                                .foregroundStyle(.white)
+                            Text("المجموع: \(minutesText(selection.totalMinutes))")
+                                .foregroundStyle(selection.tint)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.headline)
+                                .frame(width: 38, height: 38)
+                                .background(Color.white.opacity(0.08), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.white)
+                    }
+
+                    if let sleepStart = selection.sleepStart,
+                       let sleepEnd = selection.sleepEnd {
+                        GlassCard {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("بداية النوم")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.5))
+                                    Text(clockText(sleepStart))
+                                        .font(.headline)
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "arrow.left")
+                                    .foregroundStyle(.white.opacity(0.35))
+
+                                Spacer()
+
+                                VStack(alignment: .trailing, spacing: 4) {
+                                    Text("نهاية النوم")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.5))
+                                    Text(clockText(sleepEnd))
+                                        .font(.headline)
+                                }
+                            }
+                            .foregroundStyle(.white)
+                        }
+                    }
+
+                    if selection.intervals.isEmpty {
+                        GlassCard {
+                            VStack(spacing: 10) {
+                                Image(systemName: "clock.badge.questionmark")
+                                    .font(.title2)
+                                    .foregroundStyle(selection.tint)
+                                Text("لا توجد فترات زمنية مفصلة لهذه المرحلة.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.white.opacity(0.62))
+                                    .multilineTextAlignment(.center)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                    } else {
+                        GlassCard {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("الفترات بالتفصيل")
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+
+                                ForEach(Array(selection.intervals.enumerated()), id: \.element.id) { index, interval in
+                                    if index > 0 {
+                                        Divider().overlay(Color.white.opacity(0.08))
+                                    }
+
+                                    HStack(spacing: 12) {
+                                        Circle()
+                                            .fill(selection.tint)
+                                            .frame(width: 10, height: 10)
+
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("\(clockText(interval.start)) – \(clockText(interval.end))")
+                                                .font(.headline)
+                                                .foregroundStyle(.white)
+
+                                            Text("الفترة \(index + 1)")
+                                                .font(.caption)
+                                                .foregroundStyle(.white.opacity(0.42))
+                                        }
+
+                                        Spacer()
+
+                                        Text(minutesText(interval.durationMinutes))
+                                            .font(.subheadline.bold())
+                                            .foregroundStyle(selection.tint)
+                                    }
+                                }
+                            }
+                        }
+
+                        GlassCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("ملخص المرحلة")
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+                                Text("دخلت مرحلة \(selection.title) \(selection.intervals.count) مرة، بإجمالي \(minutesText(selection.totalMinutes)).")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.white.opacity(0.65))
+                            }
+                        }
+                    }
+                }
+                .padding(18)
+            }
+        }
+    }
+
+    private func minutesText(_ value: Int) -> String {
+        guard value > 0 else { return "0د" }
+        if value < 60 { return "\(value)د" }
+        return "\(value / 60)س \(value % 60)د"
+    }
+
+    private func clockText(_ value: String) -> String {
+        guard let date = parseDate(value) else { return "غير متاح" }
+
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "ar_QA")
+        formatter.timeZone = TimeZone(identifier: "Asia/Qatar")
+        formatter.dateFormat = "h:mm a"
+        return formatter.string(from: date)
+    }
+
+    private func parseDate(_ value: String) -> Date? {
+        let timeZone = TimeZone(identifier: "Asia/Qatar") ?? .current
+        let hasExplicitZone = value.hasSuffix("Z")
+            || value.range(
+                of: #"[+-]\d{2}:?\d{2}$"#,
+                options: .regularExpression
+            ) != nil
+
+        if !hasExplicitZone {
+            for format in [
+                "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
+                "yyyy-MM-dd'T'HH:mm:ss.SSS",
+                "yyyy-MM-dd'T'HH:mm:ss",
+                "yyyy-MM-dd HH:mm:ss"
+            ] {
+                let formatter = DateFormatter()
+                formatter.calendar = Calendar(identifier: .gregorian)
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = timeZone
+                formatter.dateFormat = format
+                if let date = formatter.date(from: value) { return date }
+            }
+        }
+
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: value) { return date }
+        iso.formatOptions = [.withInternetDateTime]
+        return iso.date(from: value)
+    }
+}
+
 struct ConnectionDiagnosticsView: View {
     @State private var result: DiagnosticsResponse?
     @State private var loading = false
@@ -421,6 +602,18 @@ private enum HealthArchiveLocalCache {
     }
 }
 
+private struct SleepStageSelection: Identifiable {
+    let key: String
+    let title: String
+    let tint: Color
+    let totalMinutes: Int
+    let sleepStart: String?
+    let sleepEnd: String?
+    let intervals: [SleepStageInterval]
+
+    var id: String { key }
+}
+
 struct HealthArchiveView: View {
     @State private var category: HealthArchiveCategory
     @State private var selectedDate = Date()
@@ -472,6 +665,11 @@ struct HealthArchiveView: View {
         }
         .navigationTitle("السجل الصحي")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $selectedSleepStage) { selection in
+            SleepStageDetailSheet(selection: selection)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .task { await load(useLocalCache: true) }
         .onChange(of: selectedDate) { _, _ in
             clearVisibleState()
@@ -599,12 +797,43 @@ struct HealthArchiveView: View {
             }
 
             HStack(spacing: 10) {
-                stageCard("عميق", r.sleep?.deepMinutes ?? 0, FitTheme.accentBlue)
-                stageCard("خفيف", r.sleep?.lightMinutes ?? 0, FitTheme.accent)
+                sleepStageButton(
+                    key: "deep",
+                    title: "عميق",
+                    minutes: r.sleep?.deepMinutes ?? 0,
+                    tint: FitTheme.accentBlue,
+                    sleep: r.sleep
+                )
+                sleepStageButton(
+                    key: "light",
+                    title: "خفيف",
+                    minutes: r.sleep?.lightMinutes ?? 0,
+                    tint: FitTheme.accent,
+                    sleep: r.sleep
+                )
             }
             HStack(spacing: 10) {
-                stageCard("REM", r.sleep?.remMinutes ?? 0, FitTheme.accentPurple)
-                stageCard("استيقاظ", r.sleep?.awakeMinutes ?? 0, FitTheme.warning)
+                sleepStageButton(
+                    key: "rem",
+                    title: "REM",
+                    minutes: r.sleep?.remMinutes ?? 0,
+                    tint: FitTheme.accentPurple,
+                    sleep: r.sleep
+                )
+                sleepStageButton(
+                    key: "awake",
+                    title: "استيقاظ",
+                    minutes: r.sleep?.awakeMinutes ?? 0,
+                    tint: FitTheme.warning,
+                    sleep: r.sleep
+                )
+            }
+
+            if !(r.sleep?.stages ?? []).isEmpty {
+                Text("اضغط على أي مرحلة لعرض كل فترة: من كم إلى كم وكم دقيقة.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.45))
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -683,6 +912,37 @@ struct HealthArchiveView: View {
     }
 
     private func parseSleepDate(_ value: String) -> Date? {
+        let timeZone = TimeZone(identifier: "Asia/Qatar") ?? .current
+
+        // The personal backend returns local sleep wall-clock values without an offset.
+        // Treat those as Qatar local time so we do not add +3 hours a second time.
+        let hasExplicitZone = value.hasSuffix("Z")
+            || value.range(
+                of: #"[+-]\d{2}:?\d{2}$"#,
+                options: .regularExpression
+            ) != nil
+
+        if !hasExplicitZone {
+            let localFormats = [
+                "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
+                "yyyy-MM-dd'T'HH:mm:ss.SSS",
+                "yyyy-MM-dd'T'HH:mm:ss",
+                "yyyy-MM-dd HH:mm:ss"
+            ]
+
+            for format in localFormats {
+                let formatter = DateFormatter()
+                formatter.calendar = Calendar(identifier: .gregorian)
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = timeZone
+                formatter.dateFormat = format
+
+                if let date = formatter.date(from: value) {
+                    return date
+                }
+            }
+        }
+
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = iso.date(from: value) {
@@ -690,30 +950,35 @@ struct HealthArchiveView: View {
         }
 
         iso.formatOptions = [.withInternetDateTime]
-        if let date = iso.date(from: value) {
-            return date
+        return iso.date(from: value)
+    }
+
+    private func sleepStageButton(
+        key: String,
+        title: String,
+        minutes: Int,
+        tint: Color,
+        sleep: SleepDetails?
+    ) -> some View {
+        Button {
+            let intervals = (sleep?.stages ?? [])
+                .filter { $0.type == key }
+                .sorted { $0.start < $1.start }
+
+            selectedSleepStage = SleepStageSelection(
+                key: key,
+                title: title,
+                tint: tint,
+                totalMinutes: minutes,
+                sleepStart: sleep?.start,
+                sleepEnd: sleep?.end,
+                intervals: intervals
+            )
+        } label: {
+            stageCard(title, minutes, tint)
         }
-
-        let formats = [
-            "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX",
-            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
-            "yyyy-MM-dd HH:mm:ssXXXXX",
-            "yyyy-MM-dd'T'HH:mm:ss"
-        ]
-
-        for format in formats {
-            let formatter = DateFormatter()
-            formatter.calendar = Calendar(identifier: .gregorian)
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(secondsFromGMT: 0)
-            formatter.dateFormat = format
-
-            if let date = formatter.date(from: value) {
-                return date
-            }
-        }
-
-        return nil
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title)، \(minutesText(minutes))، اضغط لعرض التفاصيل")
     }
 
     private func stageCard(_ title: String, _ minutes: Int, _ tint: Color) -> some View {
