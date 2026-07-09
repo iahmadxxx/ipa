@@ -19,6 +19,16 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Preflight source files
+        run: |
+          set -euo pipefail
+          test -f "FitbitAir-iOS/FitbitAir/APIClient.swift"
+          test -f "FitbitAir-iOS/FitbitAir/Models.swift"
+          test -f "FitbitAir-iOS/FitbitAir/MoreView.swift"
+          grep -q "struct ConnectionStatusResponse" "FitbitAir-iOS/FitbitAir/APIClient.swift"
+          grep -q "struct HealthDayResponse" "FitbitAir-iOS/FitbitAir/APIClient.swift"
+          echo "✅ New connection and health archive models are present"
+
       - name: Build iPhone app without signing
         run: |
           set -euo pipefail
