@@ -25,9 +25,15 @@ jobs:
           test -f "FitbitAir-iOS/FitbitAir/APIClient.swift"
           test -f "FitbitAir-iOS/FitbitAir/Models.swift"
           test -f "FitbitAir-iOS/FitbitAir/MoreView.swift"
+          test -f "FitbitAir-iOS/FitbitAir/WellnessView.swift"
+          test -f "FitbitAir-iOS/FitbitAir/ActivityTracking.swift"
+          grep -q "struct NutritionDayResponse" "FitbitAir-iOS/FitbitAir/Models.swift"
           grep -q "struct ConnectionStatusResponse" "FitbitAir-iOS/FitbitAir/APIClient.swift"
           grep -q "struct HealthDayResponse" "FitbitAir-iOS/FitbitAir/APIClient.swift"
-          echo "✅ New connection and health archive models are present"
+          grep -q "struct ActivityHubView" "FitbitAir-iOS/FitbitAir/ActivityTracking.swift"
+          grep -q "ActivityTracking.swift in Sources" "FitbitAir-iOS/FitbitAir.xcodeproj/project.pbxproj"
+          plutil -lint "FitbitAir-iOS/FitbitAir/Info.plist"
+          echo "✅ Core, wellness, exercise library, and activity tracking sources are present"
 
       - name: Build iPhone app without signing
         run: |
@@ -83,8 +89,8 @@ jobs:
           set_plist_value "CFBundleDisplayName" string "FitbitAir"
           set_plist_value "CFBundleName" string "FitbitAir"
           set_plist_value "CFBundleIdentifier" string "com.ahmed.fitbitair"
-          set_plist_value "CFBundleShortVersionString" string "1.0"
-          set_plist_value "CFBundleVersion" string "1"
+          set_plist_value "CFBundleShortVersionString" string "2.2"
+          set_plist_value "CFBundleVersion" string "4"
           set_plist_value "CFBundleExecutable" string "FitbitAir"
           set_plist_value "CFBundlePackageType" string "APPL"
 
@@ -126,8 +132,8 @@ jobs:
 
           test "$NAME" = "FitbitAir"
           test "$BUNDLE_ID" = "com.ahmed.fitbitair"
-          test "$VERSION" = "1.0"
-          test "$BUILD" = "1"
+          test "$VERSION" = "2.2"
+          test "$BUILD" = "4"
           test -f "$APP_PATH/AppIcon60x60@2x.png"
           test -f "$APP_PATH/AppIcon60x60@3x.png"
 
@@ -176,8 +182,8 @@ jobs:
 
           test "$NAME" = "FitbitAir"
           test "$BUNDLE_ID" = "com.ahmed.fitbitair"
-          test "$VERSION" = "1.0"
-          test "$BUILD" = "1"
+          test "$VERSION" = "2.2"
+          test "$BUILD" = "4"
 
           echo "✅ FINAL IPA VERIFIED — safe to upload as artifact"
 
