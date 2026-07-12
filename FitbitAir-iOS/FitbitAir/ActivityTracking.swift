@@ -448,29 +448,28 @@ final class ActivityTracker: NSObject, ObservableObject, CLLocationManagerDelega
 
     private func beginHeartPolling() {
         heartTask?.cancel()
-        heartTask = Task { [weak self] in
+
+        // Keep UI state mutations on the main actor. Explicit actor isolation
+        // also avoids Swift 6 captured-weak-self concurrency diagnostics.
+        heartTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do {
                     let response = try await APIClient.shared.liveHeart()
                     if let value = response.bpm {
-                        await MainActor.run {
-                            self?.bpm = value
-                            self?.bpmStale = response.stale
-                        }
+                        self?.bpm = value
+                        self?.bpmStale = response.stale
                     } else if let dashboard = try? await APIClient.shared.dashboard(force: true),
                               let fallback = dashboard.currentHR {
                         // Keep the latest synchronized Fitbit value visible instead
                         // of replacing it with an unavailable label.
-                        await MainActor.run {
-                            self?.bpm = fallback
-                            self?.bpmStale = true
-                        }
+                        self?.bpm = fallback
+                        self?.bpmStale = true
                     } else {
-                        await MainActor.run { self?.bpmStale = true }
+                        self?.bpmStale = true
                     }
                 } catch {
                     // Preserve the last valid BPM and only mark it as stale.
-                    await MainActor.run { self?.bpmStale = true }
+                    self?.bpmStale = true
                 }
 
                 try? await Task.sleep(for: .seconds(15))

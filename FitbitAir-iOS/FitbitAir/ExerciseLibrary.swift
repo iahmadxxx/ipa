@@ -805,9 +805,23 @@ private struct ExercisePoseCanvas: View {
 
             // Secondary muscles remain visible but softer.
             for muscle in exercise.secondaryMuscles.prefix(2) {
-                drawMuscle(muscle, pose: pose, opacity: 0.34, context: &context, size: size, scale: scale, line: line, ellipse: ellipse, highlight: highlight)
+                drawMuscle(
+                    muscle,
+                    pose: pose,
+                    opacity: 0.34,
+                    line: line,
+                    ellipse: ellipse,
+                    highlight: highlight
+                )
             }
-            drawMuscle(exercise.primaryMuscle, pose: pose, opacity: 0.98, context: &context, size: size, scale: scale, line: line, ellipse: ellipse, highlight: highlight)
+            drawMuscle(
+                exercise.primaryMuscle,
+                pose: pose,
+                opacity: 0.98,
+                line: line,
+                ellipse: ellipse,
+                highlight: highlight
+            )
         }
     }
 
@@ -815,9 +829,6 @@ private struct ExercisePoseCanvas: View {
         _ muscle: ExerciseMuscleGroup,
         pose: BodyPose,
         opacity: Double,
-        context: inout GraphicsContext,
-        size: CGSize,
-        scale: CGFloat,
         line: (CGPoint, CGPoint, Color, CGFloat) -> Void,
         ellipse: (CGPoint, CGFloat, CGFloat, Color, Color?) -> Void,
         highlight: (CGPoint, CGPoint, CGFloat, Double) -> Void
