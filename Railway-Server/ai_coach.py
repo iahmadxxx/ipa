@@ -5,7 +5,9 @@ ai_coach.py — مدرب ذكي متعدد الأدوار مع ذاكرة محا
 import os
 import json
 import base64
+import re
 import requests
+import token_store
 
 MODELS = [
     "gemini-3-flash",
@@ -23,7 +25,7 @@ class AICoachError(Exception):
 
 
 def _get_api_key():
-    key = os.environ.get("GEMINI_API_KEY")
+    key = token_store.get_gemini_api_key()
     if not key:
         raise AICoachError("مفتاح GEMINI_API_KEY ناقص بـ env_config.py")
     return key
@@ -73,7 +75,7 @@ def _call_gemini_multiturn(system_instruction, history, new_question, max_tokens
     payload = {
         "system_instruction": {"parts": [{"text": system_instruction}]},
         "contents": contents,
-        "generationConfig": {"temperature": 0.85, "maxOutputTokens": max_tokens},
+        "generationConfig": {"temperature": 0.42, "maxOutputTokens": max_tokens},
     }
 
     errors = []
@@ -164,20 +166,38 @@ def _build_gym_section(gym_context):
 
 def _build_system_instruction(fitbit_context, gym_context=None):
     gym_section = _build_gym_section(gym_context)
-    return f"""أنت مدرب لياقة ورياضة متكامل محترف — تتكلم بلهجة خليجية ودية ومحفزة.
-تخصصك يشمل كل شيء بدون قيود: تمارين الحديد (أوزان، جولات، تكرارات، تقنية، برامج تدريبية)، كارديو، نوم، تغذية، تعافي.
+    return f"""أنت مساعد أحمد الذكي داخل تطبيق FitbitAir، وتتصرف كمساعد عام قوي مثل GPT، وفي نفس الوقت كمدرب شخصي يعرف بيانات أحمد عندما يكون السؤال عنه.
 
-بيانات المستخدم الفعلية:
+قدراتك:
+- جاوب عن أي سؤال عام: تقنية، سفر، كتابة، ترجمة، أفكار، معرفة عامة، رياضة، تغذية وغيرها.
+- عندما يسأل أحمد عن نفسه أو صحته أو تمارينه أو سجله، استخدم بياناته الفعلية أدناه.
+- لا تحصر نفسك بالرياضة إذا كان السؤال عن موضوع آخر.
+
+بيانات أحمد الفعلية:
 {fitbit_context}{gym_section}
 
-تعليمات التجاوب:
-- جاوب مباشرة على سؤاله بدون مقدمات.
-- استخدم بياناته الفعلية (الأوزان، الجولات، خطواته، نومه) في إجابتك.
-- لو سأل عن تمرين: اشرح طريقته الصحيحة، عضلاته، أخطاؤه الشائعة.
-- لو سأل عن برنامج أو خطة: ابنيها بناءً على ما سجّله فعلاً.
-- لو كان سؤالاً متابعة (مثل "زدني" أو "وش قصدك"): أكمل من السياق السابق مباشرة.
-- اكتب بالعربي بلهجة خليجية، مفصّل بقدر ما يحتاج السؤال.
-- فقط لو السؤال طبي بحت (مرض، أعراض، أدوية): انصحه يراجع طبيب."""
+قواعد صارمة عند الكلام عن بيانات أحمد:
+1. مصدر الحقيقة للبرنامج الحالي هو قسم "البرنامج الحالي الفعلي الآن" فقط.
+2. لا تقل إن تمرينًا ضمن البرنامج الحالي إذا كان موسومًا "تاريخي/محذوف" أو موجودًا في قسم التمارين التاريخية.
+3. إذا أضاف أحمد تمرينًا جديدًا، اعتبره نشطًا فقط إذا ظهر في البرنامج الحالي.
+4. إذا سجّل تمرينًا جديدًا، اقرأ جولاته من آخر التمارين الفعلية وأدخله في التحليل فورًا.
+5. إذا حذف تمرينًا، لا تعرضه ضمن قائمته الحالية ولا تقترح أنه ما زال في البرنامج. يجوز ذكره فقط كتاريخ سابق وبوضوح.
+6. لا تخترع تمرينًا أو وزنًا أو عدة أو تاريخًا. إذا البيانات غير موجودة قل بوضوح إنها غير متوفرة.
+7. إذا سأل "وش لعبت اليوم؟" أو "وش سجلت؟" استخدم تاريخ اليوم الفعلي من السجل واذكر كل تمرين وكل جولة ووزن وعدات.
+8. إذا سأل عن تمرين محدد، استخدم تفاصيل جلساته الموجودة في السياق وقارنها زمنيًا.
+9. فرّق دائمًا بين:
+   - البرنامج الحالي
+   - التمارين التي نفذها فعلًا
+   - التمارين التاريخية المحذوفة
+10. عند التحليل، استشهد بالأرقام الفعلية الموجودة في السياق بدل كلام عام.
+
+أسلوب الرد:
+- جاوب مباشرة وبوضوح.
+- استخدم العربية بلهجة خليجية طبيعية ما لم يطلب لغة أخرى.
+- لا تستخدم تنسيق Markdown ثقيل أو نجوم ** داخل التطبيق إلا عند الحاجة.
+- في الأسئلة العامة: جاوب بشكل طبيعي مثل مساعد عام، ولا تحشر بيانات اللياقة بدون سبب.
+- في الأسئلة الشخصية: كن دقيقًا ومهنيًا ومبنيًا على البيانات.
+- في الأسئلة الطبية عالية الخطورة: وضح حدودك وانصح بمختص عند الحاجة."""
 
 
 def analyze_week(week_data, today_data):
@@ -208,3 +228,57 @@ def ask_coach(question, week_data, today_data, gym_context=None, history=None):
         history=history or [],
         new_question=question,
     )
+
+
+# ---------------------------------------------------------------------------
+# Structured Gemini helpers for FitbitAir 2.0 image/report features
+# ---------------------------------------------------------------------------
+
+def _structured_json_from_text(text):
+    value=(text or "").strip()
+    value=re.sub(r"^```(?:json)?\s*", "", value, flags=re.I)
+    value=re.sub(r"\s*```$", "", value)
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        starts=[x for x in (value.find("{"),value.find("[")) if x>=0]
+        if not starts: raise AICoachError("رد Gemini غير منظم")
+        start=min(starts); end=value.rfind("}" if value[start]=="{" else "]")
+        if end<=start: raise AICoachError("تعذر قراءة رد Gemini")
+        try: return json.loads(value[start:end+1])
+        except json.JSONDecodeError as exc: raise AICoachError("تعذر قراءة JSON من Gemini") from exc
+
+
+def generate_structured_json(prompt, max_tokens=1600, temperature=0.2):
+    api_key=_get_api_key(); errors=[]
+    for model in MODELS:
+        try:
+            r=requests.post(f"{BASE_URL}/{model}:generateContent?key={api_key}",json={
+                "contents":[{"parts":[{"text":prompt}]}],
+                "generationConfig":{"temperature":temperature,"maxOutputTokens":max_tokens,"responseMimeType":"application/json"},
+            },timeout=45)
+            if r.status_code==200:
+                try: return _structured_json_from_text(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+                except Exception as e: errors.append(f"{model}: {e}")
+            else: errors.append(f"{model}: {r.status_code}")
+        except requests.RequestException as e: errors.append(f"{model}: {e}")
+    raise AICoachError("تعذر إنشاء النتيجة المنظمة:\n"+"\n".join(errors[:5]))
+
+
+def analyze_images_json(prompt, images, max_tokens=1900, temperature=0.15):
+    if not images: raise AICoachError("لم يتم إرسال صورة")
+    api_key=_get_api_key(); errors=[]; parts=[{"text":prompt}]
+    for image_bytes,mime_type in images[:3]:
+        parts.append({"inline_data":{"mime_type":mime_type or "image/jpeg","data":base64.b64encode(image_bytes).decode("ascii")}})
+    for model in MODELS:
+        try:
+            r=requests.post(f"{BASE_URL}/{model}:generateContent?key={api_key}",json={
+                "contents":[{"role":"user","parts":parts}],
+                "generationConfig":{"temperature":temperature,"maxOutputTokens":max_tokens,"responseMimeType":"application/json"},
+            },timeout=60)
+            if r.status_code==200:
+                try: return _structured_json_from_text(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+                except Exception as e: errors.append(f"{model}: {e}")
+            else: errors.append(f"{model}: {r.status_code}")
+        except requests.RequestException as e: errors.append(f"{model}: {e}")
+    raise AICoachError("تعذر تحليل الصورة:\n"+"\n".join(errors[:5]))

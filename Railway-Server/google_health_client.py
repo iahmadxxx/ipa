@@ -6,9 +6,11 @@ google_health_client.py — النسخة المطورة
 import os
 import time
 import requests
+import re
 
 import token_store
 from datetime import datetime, timedelta, timezone, date as date_type
+from zoneinfo import ZoneInfo
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_BASE = "https://health.googleapis.com/v4/users/me/dataTypes"
@@ -128,6 +130,69 @@ def _parse_time_local(iso_string):
         return None
 
 
+QATAR_TZ = ZoneInfo("Asia/Qatar")
+
+
+def _sleep_timestamp_has_explicit_zone(raw):
+    text = str(raw or "").strip()
+    if not text:
+        return False
+    if text.endswith(("Z", "z")):
+        return True
+    return bool(re.search(r"[+-]\d{2}:?\d{2}$", text))
+
+
+def _parse_sleep_time_smart(raw_value):
+    """
+    Canonical sleep timestamp parser.
+
+    - Explicit Z/UTC/offset: parse as a real instant, then convert to Qatar.
+    - No timezone/offset: preserve wall-clock fields as Qatar local time.
+
+    Always returns a timezone-aware Asia/Qatar datetime.
+    """
+    if raw_value is None:
+        return None
+
+    raw = str(raw_value).strip()
+    if not raw:
+        return None
+
+    try:
+        if _sleep_timestamp_has_explicit_zone(raw):
+            normalized = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(QATAR_TZ)
+
+        dt = datetime.fromisoformat(raw)
+        return dt.replace(tzinfo=QATAR_TZ)
+
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _parse_sleep_time_exact(raw_value):
+    """Legacy parser that preserves the timestamp's written wall-clock fields.
+
+    Kept only for backward-compatible tests/tools. Production sleep parsing uses
+    ``_parse_sleep_time_smart`` so explicit UTC/offset timestamps are converted
+    to Qatar time correctly.
+    """
+    if raw_value is None:
+        return None
+    raw = str(raw_value).strip()
+    if not raw:
+        return None
+    try:
+        normalized = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+        dt = datetime.fromisoformat(normalized)
+        return dt.replace(tzinfo=None)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 def _to_date(d):
     """يحول نص أو date object إلى date."""
     if isinstance(d, str):
@@ -162,86 +227,278 @@ def _get_calories(d):
 
 
 def get_resting_heart_rate(d=None):
-    """معدل النبض أثناء الراحة — لتاريخ محدد أو آخر قراءة."""
+    """
+    معدل نبض الراحة.
+
+    عند طلب تاريخ:
+    1) نرجع قراءة نفس اليوم إن وجدت.
+    2) إذا Google لم ينشر قراءة اليوم بعد، نرجع أحدث قراءة سابقة خلال 7 أيام فقط.
+    """
     points = _list_points("daily-resting-heart-rate", "")
     if not points:
         return None
 
-    def point_date(p):
-        dd = p.get("dailyRestingHeartRate", {}).get("date", {})
-        return (dd.get("year", 0), dd.get("month", 0), dd.get("day", 0))
+    def unpack(point):
+        payload = point.get("dailyRestingHeartRate", {})
+        dd = payload.get("date", {})
+        try:
+            point_date = date_type(
+                int(dd.get("year")),
+                int(dd.get("month")),
+                int(dd.get("day")),
+            )
+        except Exception:
+            point_date = None
 
-    if d is not None:
-        target = _to_date(d)
-        # نفلتر للنقطة المطابقة للتاريخ
-        for p in points:
-            dd = p.get("dailyRestingHeartRate", {}).get("date", {})
-            if (dd.get("year") == target.year
-                    and dd.get("month") == target.month
-                    and dd.get("day") == target.day):
-                bpm = p["dailyRestingHeartRate"].get("beatsPerMinute")
-                return int(bpm) if bpm is not None else None
+        bpm = payload.get("beatsPerMinute")
+        try:
+            bpm = int(round(float(bpm))) if bpm is not None else None
+        except Exception:
+            bpm = None
+
+        return point_date, bpm
+
+    parsed = [unpack(p) for p in points]
+    parsed = [(dt, bpm) for dt, bpm in parsed if dt is not None and bpm is not None]
+    if not parsed:
         return None
 
-    points.sort(key=point_date, reverse=True)
-    latest = points[0].get("dailyRestingHeartRate", {})
-    bpm = latest.get("beatsPerMinute")
-    return int(bpm) if bpm is not None else None
+    parsed.sort(key=lambda x: x[0], reverse=True)
+
+    if d is None:
+        return parsed[0][1]
+
+    target = _to_date(d)
+
+    for dt, bpm in parsed:
+        if dt == target:
+            return bpm
+
+    recent_previous = [
+        (dt, bpm)
+        for dt, bpm in parsed
+        if dt < target and 0 < (target - dt).days <= 7
+    ]
+    if recent_previous:
+        return recent_previous[0][1]
+
+    return None
+
+
+def _parse_heart_timestamp(raw_value):
+    """Parse one timestamp value without looking elsewhere in the payload."""
+    if raw_value is None:
+        return None
+
+    if isinstance(raw_value, dict):
+        # protobuf timestamp object
+        seconds = raw_value.get("seconds")
+        if seconds is not None:
+            try:
+                return datetime.fromtimestamp(float(seconds), tz=timezone.utc)
+            except Exception:
+                return None
+        return None
+
+    if isinstance(raw_value, (int, float)):
+        # Avoid guessing units unless magnitude is clearly milliseconds.
+        value = float(raw_value)
+        try:
+            if abs(value) > 10_000_000_000:
+                value /= 1000.0
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except Exception:
+            return None
+
+    if isinstance(raw_value, str):
+        raw = raw_value.strip()
+        if not raw:
+            return None
+        try:
+            # Heart-rate timestamps represent an instant. Do not add Qatar's
+            # offset to the instant itself (the old parser shifted every Z
+            # timestamp three hours into the future and the freshness filter
+            # rejected it). Convert explicit zones to UTC; when Google omits a
+            # zone, treat the written wall-clock value as Qatar local time.
+            normalized = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=QATAR_TZ)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    return None
+
+
+def _direct_bpm_from_node(node):
+    """Read BPM only from this dictionary itself, never from siblings/children."""
+    if not isinstance(node, dict):
+        return None
+
+    for key in (
+        "beatsPerMinute", "beats_per_minute", "bpm",
+        "value", "doubleValue", "intVal", "integerValue",
+    ):
+        value = node.get(key)
+        if isinstance(value, (int, float, str)):
+            try:
+                bpm = int(round(float(value)))
+                if 20 <= bpm <= 260:
+                    return bpm
+            except (TypeError, ValueError):
+                pass
+
+    return None
+
+
+def _direct_time_from_node(node):
+    """
+    Read timestamp only from this sample node or its own interval metadata.
+    Never search unrelated sibling samples.
+    """
+    if not isinstance(node, dict):
+        return None
+
+    interval = node.get("interval") or node.get("timeInterval") or {}
+    if not isinstance(interval, dict):
+        interval = {}
+
+    # Some Google Health payloads keep the interval under metadata/timing while
+    # the BPM remains on this exact sample. Looking only inside this same node is
+    # still strict pairing and never borrows a timestamp from a sibling sample.
+    metadata = node.get("metadata") or {}
+    if isinstance(metadata, dict):
+        timing = metadata.get("timing") or metadata.get("time") or metadata
+        if isinstance(timing, dict):
+            nested_interval = timing.get("interval") or timing.get("timeInterval") or {}
+            if isinstance(nested_interval, dict) and nested_interval:
+                interval = {**nested_interval, **interval}
+
+    # String/ISO timestamps.
+    for key in (
+        "endTime", "end_time", "startTime", "start_time",
+        "dateTime", "datetime", "timestamp", "time",
+    ):
+        if key in node:
+            parsed = _parse_heart_timestamp(node.get(key))
+            if parsed is not None:
+                return parsed
+
+        if key in interval:
+            parsed = _parse_heart_timestamp(interval.get(key))
+            if parsed is not None:
+                return parsed
+
+    # Explicit epoch fields.
+    for key in ("timestampMillis", "epochMillis", "timeMillis"):
+        if key in node:
+            try:
+                return datetime.fromtimestamp(float(node[key]) / 1000.0, tz=timezone.utc)
+            except Exception:
+                pass
+
+    for key in ("timestampSeconds", "epochSeconds", "unixTime"):
+        if key in node:
+            parsed = _parse_heart_timestamp(node.get(key))
+            if parsed is not None:
+                return parsed
+
+    # Protobuf-style timestamp object stored under a timestamp key.
+    for key in ("timestamp", "dateTime", "time"):
+        value = node.get(key)
+        if isinstance(value, dict):
+            parsed = _parse_heart_timestamp(value)
+            if parsed is not None:
+                return parsed
+
+    return None
+
+
+def _collect_paired_heart_samples(node):
+    """
+    Collect only BPM/time pairs that belong to the SAME logical sample.
+
+    Important:
+    - A BPM from one sample is never paired with a timestamp from another sample.
+    - Parent containers may pair a direct BPM with their own interval metadata.
+    - Child samples are processed independently.
+    """
+    pairs = []
+
+    if isinstance(node, dict):
+        bpm = _direct_bpm_from_node(node)
+        measured_at = _direct_time_from_node(node)
+
+        if bpm is not None and measured_at is not None:
+            pairs.append((bpm, measured_at))
+
+        # Recurse into each child independently.
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                pairs.extend(_collect_paired_heart_samples(value))
+
+    elif isinstance(node, list):
+        for item in node:
+            pairs.extend(_collect_paired_heart_samples(item))
+
+    return pairs
 
 
 def _extract_heart_sample(point):
-    """يحاول قراءة قيمة النبض والوقت من أكثر صيغ Google Health شيوعًا."""
+    """
+    Return the newest strict pair from one Google Health data point.
+
+    A result exists only when BPM and timestamp are proven to come from the
+    same logical sample/container.
+    """
     payload = point.get("heartRate") or point.get("heart_rate") or point
+    pairs = _collect_paired_heart_samples(payload)
 
-    def pick_number(obj):
-        if isinstance(obj, dict):
-            for key in ("beatsPerMinute", "beats_per_minute", "bpm", "value", "doubleValue", "intVal"):
-                val = obj.get(key)
-                if isinstance(val, (int, float, str)):
-                    try:
-                        return float(val)
-                    except (TypeError, ValueError):
-                        pass
-            for key in ("samples", "values", "measurements", "data"):
-                seq = obj.get(key)
-                if isinstance(seq, list):
-                    found = [pick_number(x) for x in seq]
-                    found = [x for x in found if x is not None]
-                    if found:
-                        return found[-1]
-        elif isinstance(obj, (int, float)):
-            return float(obj)
+    # Some Google Health responses keep the interval on the outer data point
+    # and the BPM inside one nested value. Pairing is still safe when the whole
+    # data point contains one unique plausible BPM value.
+    if not pairs and isinstance(payload, dict):
+        outer_time = _direct_time_from_node(point) or _direct_time_from_node(payload)
+
+        def collect_bpms(node):
+            found = []
+            if isinstance(node, dict):
+                value = _direct_bpm_from_node(node)
+                if value is not None:
+                    found.append(value)
+                for child in node.values():
+                    if isinstance(child, (dict, list)):
+                        found.extend(collect_bpms(child))
+            elif isinstance(node, list):
+                for child in node:
+                    found.extend(collect_bpms(child))
+            return found
+
+        unique_bpms = sorted(set(collect_bpms(payload)))
+        if outer_time is not None and len(unique_bpms) == 1:
+            pairs.append((unique_bpms[0], outer_time))
+
+    if not pairs:
         return None
 
-    def pick_time(obj):
-        if not isinstance(obj, dict):
-            return None
-        interval = obj.get("interval") or obj.get("timeInterval") or {}
-        for key in ("endTime", "end_time", "startTime", "start_time", "dateTime", "time"):
-            val = obj.get(key)
-            if isinstance(val, str):
-                return val
-            val = interval.get(key)
-            if isinstance(val, str):
-                return val
-        for key in ("samples", "values", "measurements", "data"):
-            seq = obj.get(key)
-            if isinstance(seq, list) and seq:
-                for item in reversed(seq):
-                    val = pick_time(item)
-                    if val:
-                        return val
-        return None
+    # Deduplicate exact pairs and select newest time.
+    unique = {}
+    for bpm, measured_at in pairs:
+        unique[(bpm, measured_at.isoformat())] = (bpm, measured_at)
 
-    bpm = pick_number(payload)
-    time_str = pick_time(payload) or pick_time(point)
-    if bpm is None:
-        return None
-    return int(round(bpm)), _parse_time_local(time_str)
+    return max(unique.values(), key=lambda item: item[1])
 
 
 def get_current_heart_rate():
-    """آخر قراءة نبض لحظية متاحة. يرجع (bpm, local_datetime) أو None."""
+    """
+    أحدث قراءة نبض موثقة فقط.
+
+    شروط القبول:
+    - BPM ووقت القياس من نفس العينة.
+    - وقت القياس ليس في المستقبل بأكثر من 5 دقائق.
+    - القراءة ليست أقدم من 72 ساعة.
+    """
     now = _utc_now()
     windows = [timedelta(hours=6), timedelta(hours=24), timedelta(days=3)]
     all_points = []
@@ -253,16 +510,18 @@ def get_current_heart_rate():
             f'heart_rate.interval.start_time >= "{start}"',
             f'heartRate.interval.startTime >= "{start}"',
             f'interval.start_time >= "{start}"',
-            "",  # fallback: بعض الحسابات لا تقبل filter لهذا النوع
+            "",
         ]
+
         for flt in filters:
             try:
                 points = _list_points("heart-rate", flt, max_pages=3)
                 if points:
                     all_points = points
                     break
-            except GoogleHealthError as e:
-                last_err = e
+            except GoogleHealthError as exc:
+                last_err = exc
+
         if all_points:
             break
 
@@ -274,16 +533,28 @@ def get_current_heart_rate():
     samples = []
     for point in all_points:
         sample = _extract_heart_sample(point)
-        if sample:
-            samples.append(sample)
+        if sample is None:
+            continue
+
+        bpm, measured_at = sample
+
+        # Normalize timezone-aware timestamp to UTC for reliable comparison.
+        if measured_at.tzinfo is None:
+            measured_at = measured_at.replace(tzinfo=timezone.utc)
+
+        age_seconds = (now - measured_at.astimezone(timezone.utc)).total_seconds()
+
+        if age_seconds < -300:
+            continue
+        if age_seconds > 72 * 3600:
+            continue
+
+        samples.append((bpm, measured_at))
+
     if not samples:
         return None
 
-    # اختر أحدث قراءة زمنياً، وإن غاب الوقت نأخذ آخر قراءة صالحة.
-    timed = [s for s in samples if s[1] is not None]
-    if timed:
-        return max(timed, key=lambda x: x[1])
-    return samples[-1]
+    return max(samples, key=lambda item: item[1])
 
 
 def get_sleep(d=None):
@@ -326,18 +597,26 @@ def get_sleep(d=None):
     timeline = []
     for st in raw_stages:
         interval = st.get("interval", st)
-        start_dt = _parse_time_local(interval.get("startTime"))
-        end_dt = _parse_time_local(interval.get("endTime"))
+        start_dt = _parse_sleep_time_smart(interval.get("startTime"))
+        end_dt = _parse_sleep_time_smart(interval.get("endTime"))
         stype = st.get("type") or st.get("stage") or st.get("stageType")
         minutes = None
+        duration_seconds = None
         if start_dt and end_dt:
-            minutes = int((end_dt - start_dt).total_seconds() // 60)
-        timeline.append({"type": stype, "start": start_dt, "end": end_dt, "minutes": minutes})
+            duration_seconds = max(0, int(round((end_dt - start_dt).total_seconds())))
+            minutes = int((duration_seconds + 30) // 60)
+        timeline.append({
+            "type": stype,
+            "start": start_dt,
+            "end": end_dt,
+            "minutes": minutes,
+            "duration_seconds": duration_seconds,
+        })
     sleep["_stages_timeline"] = timeline
 
     interval = sleep.get("interval", {})
-    sleep["_local_start"] = _parse_time_local(interval.get("startTime"))
-    sleep["_local_end"] = _parse_time_local(interval.get("endTime"))
+    sleep["_local_start"] = _parse_sleep_time_smart(interval.get("startTime"))
+    sleep["_local_end"] = _parse_sleep_time_smart(interval.get("endTime"))
 
     return sleep
 
@@ -397,3 +676,152 @@ def get_week_summary_for(end_date=None):
 
 def get_week_summary():
     return get_week_summary_for()
+
+
+def get_paired_devices():
+    """قائمة الأجهزة المقترنة مع البطارية ووقت آخر مزامنة."""
+    url = "https://health.googleapis.com/v4/users/me/pairedDevices"
+    resp = requests.get(
+        url,
+        headers=_headers(),
+        params={"pageSize": 100},
+        timeout=REQUEST_TIMEOUT,
+    )
+    if resp.status_code != 200:
+        raise GoogleHealthError(
+            f"paired-devices: {resp.status_code} {resp.text[:300]}"
+        )
+    return resp.json().get("pairedDevices", [])
+
+# ---------------------------------------------------------------------------
+# Exercise sessions (FitbitAir activity tracking)
+# ---------------------------------------------------------------------------
+
+def _exercise_time_filter(start_time=None, end_time=None):
+    """Build a supported exercise-session filter.
+
+    Google Health supports civil start-time filters for exercise sessions, not
+    physical ``exercise.interval.start_time`` filters.  Add a one-day buffer on
+    both sides so activities recorded while travelling are not missed because
+    their civil timezone differs from the server timezone.  Exact matching and
+    de-duplication are still performed locally after download.
+    """
+    parts = []
+    if start_time:
+        try:
+            start = datetime.fromisoformat(str(start_time).replace("Z", "+00:00"))
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+        except Exception:
+            start = None
+        if start:
+            civil_start = (start - timedelta(days=1)).date().isoformat()
+            parts.append(f'exercise.interval.civil_start_time >= "{civil_start}"')
+    if end_time:
+        try:
+            end = datetime.fromisoformat(str(end_time).replace("Z", "+00:00"))
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
+        except Exception:
+            end = None
+        if end:
+            civil_end = (end + timedelta(days=1)).date().isoformat()
+            parts.append(f'exercise.interval.civil_start_time < "{civil_end}"')
+    return " AND ".join(parts)
+
+
+def list_exercises(start_time=None, end_time=None, reconcile=True, max_pages=8):
+    """List exercise sessions from Google Health, preferring reconciled Fitbit data."""
+    endpoint = "dataPoints:reconcile" if reconcile else "dataPoints"
+    url = f"{API_BASE}/exercise/{endpoint}"
+    filter_expr = _exercise_time_filter(start_time, end_time)
+    all_points = []
+    page_token = None
+    pages = 0
+    while True:
+        params = {"pageSize": 25}
+        if filter_expr:
+            params["filter"] = filter_expr
+        if page_token:
+            params["pageToken"] = page_token
+        if reconcile:
+            params["dataSourceFamily"] = "users/me/dataSourceFamilies/all-sources"
+        resp = requests.get(url, headers=_headers(), params=params, timeout=REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            # Some accounts temporarily reject reconcile filters. Fall back to list.
+            if reconcile and pages == 0:
+                return list_exercises(start_time, end_time, reconcile=False, max_pages=max_pages)
+            raise GoogleHealthError(f"exercise: {resp.status_code} {resp.text[:400]}")
+        body = resp.json()
+        all_points.extend(body.get("dataPoints", []))
+        page_token = body.get("nextPageToken")
+        pages += 1
+        if not page_token or pages >= max_pages:
+            break
+    return all_points
+
+
+def create_exercise_session(session):
+    """Create one exercise session written by FitbitAir in Google Health."""
+    start = session.get("start_time")
+    end = session.get("end_time")
+    if not start or not end:
+        raise GoogleHealthError("exercise create: missing start/end")
+
+    metrics = {}
+    distance_m = session.get("distance_meters")
+    if distance_m is not None and float(distance_m) > 0:
+        metrics["distanceMillimeters"] = float(distance_m) * 1000.0
+    calories = session.get("calories")
+    if calories is not None and float(calories) > 0:
+        metrics["caloriesKcal"] = float(calories)
+    steps = session.get("steps")
+    if steps is not None and int(steps) > 0:
+        metrics["steps"] = str(int(steps))
+    avg_hr = session.get("average_heart_rate")
+    if avg_hr is not None and int(avg_hr) > 0:
+        metrics["averageHeartRateBeatsPerMinute"] = str(int(avg_hr))
+    speed = session.get("average_speed_mps")
+    if speed is not None and float(speed) > 0:
+        metrics["averageSpeedMillimetersPerSecond"] = float(speed) * 1000.0
+    elevation = session.get("elevation_gain_meters")
+    if elevation is not None and float(elevation) > 0:
+        metrics["elevationGainMillimeters"] = float(elevation) * 1000.0
+    azm = session.get("active_zone_minutes")
+    if azm is not None and int(azm) > 0:
+        metrics["activeZoneMinutes"] = str(int(azm))
+
+    active_seconds = max(1, int(session.get("active_seconds") or session.get("duration_seconds") or 1))
+    offset_seconds = int(session.get("utc_offset_seconds") or LOCAL_UTC_OFFSET_HOURS * 3600)
+    offset = f"{offset_seconds}s"
+    exercise = {
+        "interval": {
+            "startTime": start,
+            "startUtcOffset": offset,
+            "endTime": end,
+            "endUtcOffset": offset,
+        },
+        "exerciseType": str(session.get("exercise_type") or "OTHER"),
+        "displayName": str(session.get("display_name") or "FitbitAir Activity")[:120],
+        "activeDuration": f"{active_seconds}s",
+        "metricsSummary": metrics,
+        "exerciseMetadata": {"hasGps": bool(session.get("has_gps"))},
+        "exerciseEvents": [
+            {"eventTime": start, "eventUtcOffset": offset, "exerciseEventType": "START"},
+            {"eventTime": end, "eventUtcOffset": offset, "exerciseEventType": "STOP"},
+        ],
+    }
+    notes = str(session.get("notes") or "").strip()
+    client_id = str(session.get("client_id") or "").strip()
+    marker = f"FitbitAir:{client_id}" if client_id else "FitbitAir"
+    exercise["notes"] = (notes + "\n" + marker).strip()[:1000]
+
+    resp = requests.post(
+        f"{API_BASE}/exercise/dataPoints",
+        headers={**_headers(), "Content-Type": "application/json"},
+        json={"exercise": exercise},
+        timeout=REQUEST_TIMEOUT,
+    )
+    if resp.status_code not in (200, 201, 202):
+        raise GoogleHealthError(f"exercise create: {resp.status_code} {resp.text[:500]}")
+    return resp.json()

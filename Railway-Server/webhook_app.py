@@ -15,6 +15,7 @@ import re
 import json
 import datetime
 import hashlib
+import base64
 import hmac
 import time
 from urllib.parse import parse_qsl
@@ -25,15 +26,18 @@ from flask import Flask, request, jsonify, Response
 from google_health_client import (
     get_today_summary, get_week_summary, get_sleep, get_resting_heart_rate,
     get_current_heart_rate, get_summary_by_date, get_week_summary_for, GoogleHealthError,
-    TokenExpiredError,
+    TokenExpiredError, get_access_token, get_steps, get_calories, get_paired_devices,
+    list_exercises, create_exercise_session,
 )
 import token_store
 from analyzer import (
     format_today_message, format_week_message, format_sleep_message,
     format_heart_message, format_activity_message,
 )
-from ai_coach import analyze_week, ask_coach, transcribe_audio, AICoachError
+from ai_coach import analyze_week, ask_coach, transcribe_audio, analyze_images_json, generate_structured_json, AICoachError
 import gym_tracker
+import wellness_tracker
+import activity_tracker
 from performance_intelligence import (
     format_readiness, today_plan, progress_report, format_muscle_balance,
     format_next_suggestions, weekly_report, recommend_next_weight,
@@ -41,7 +45,340 @@ from performance_intelligence import (
 )
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 28 * 1024 * 1024
 gym_tracker.init_db()
+wellness_tracker.init_db()
+activity_tracker.init_db()
+
+_IOS_CACHE = {}
+
+def _cache_get(key, ttl_seconds):
+    item = _IOS_CACHE.get(key)
+    if not item:
+        return None
+    if time.monotonic() - item["time"] > ttl_seconds:
+        _IOS_CACHE.pop(key, None)
+        return None
+    return item["value"]
+
+def _cache_set(key, value):
+    _IOS_CACHE[key] = {"time": time.monotonic(), "value": value}
+    return value
+
+def _invalidate_ios_cache(prefixes=None):
+    if not prefixes:
+        _IOS_CACHE.clear()
+        return
+    prefixes = tuple(prefixes)
+    for key in list(_IOS_CACHE):
+        if str(key).startswith(prefixes):
+            _IOS_CACHE.pop(key, None)
+
+def _local_today_iso():
+    return (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).date().isoformat()
+
+
+def _health_archive_ttl(kind, date_str):
+    is_today = date_str == _local_today_iso()
+    if kind == "heart":
+        return 30 if is_today else 3600
+    if kind == "activity":
+        return 60 if is_today else 3600
+    if kind == "sleep":
+        return 300 if is_today else 21600
+    if kind == "readiness":
+        return 120 if is_today else 21600
+    return 120 if is_today else 3600
+
+
+def _health_archive_cached(kind, date_str, loader, force=False):
+    # v3 invalidates old sleep payloads produced by previous timezone logic.
+    cache_version = "v3" if kind == "sleep" else "v1"
+    key = f"health:{cache_version}:{kind}:{date_str}"
+    payload = None if force else _cache_get(key, _health_archive_ttl(kind, date_str))
+    cache_hit = payload is not None
+
+    if payload is None:
+        started = time.monotonic()
+        payload = loader()
+        payload["_server_ms"] = int((time.monotonic() - started) * 1000)
+        payload["_updated_at"] = datetime.datetime.utcnow().isoformat()
+        _cache_set(key, payload)
+
+    return payload, cache_hit
+
+
+def _payload_sleep(date_str):
+    sleep = get_sleep(date_str)
+    return {"ok": True, "date": date_str, "sleep": _sleep_details_ios(sleep)}
+
+
+def _payload_heart(date_str):
+    resting = get_resting_heart_rate(date_str)
+    current_bpm = None
+    current_time = None
+
+    if date_str == _local_today_iso():
+        current = get_current_heart_rate()
+        if current:
+            current_bpm, current_dt = current
+            current_time = current_dt.isoformat() if current_dt else None
+
+    return {
+        "ok": True,
+        "date": date_str,
+        "heart": {
+            "current_bpm": current_bpm,
+            "resting_bpm": resting,
+            "last_reading_at": current_time,
+        },
+    }
+
+
+def _payload_activity(date_str):
+    return {
+        "ok": True,
+        "date": date_str,
+        "activity": {
+            "steps": get_steps(date_str),
+            "calories": get_calories(date_str),
+        },
+    }
+
+
+def _payload_readiness(date_str):
+    summary = get_summary_by_date(date_str)
+    return {
+        "ok": True,
+        "date": date_str,
+        "readiness": format_readiness(summary),
+        "today_plan": today_plan(summary),
+    }
+
+
+def _payload_summary(date_str):
+    return {"ok": True, "date": date_str, "dashboard": _dashboard_payload(date_str)}
+
+
+def _parse_google_timestamp(value):
+    if not value:
+        return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+    try:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+
+
+def _normalize_battery_level(value):
+    if value is None:
+        return None
+    try:
+        level = int(value)
+        return max(0, min(100, level))
+    except Exception:
+        return None
+
+
+def _device_contract(
+    status,
+    *,
+    device=None,
+    battery_level=None,
+    battery_status=None,
+    last_sync_time=None,
+    message="",
+    reauth_url=None,
+):
+    """The one and only device-status JSON contract."""
+    status = status if status in {"ok", "reauth", "unavailable"} else "unavailable"
+    needs_reauth = status == "reauth"
+    return {
+        "ok": status == "ok",
+        "status": status,
+        "connected": status == "ok",
+        "needs_reauth": needs_reauth,
+        "device": str(device) if device else None,
+        "battery_level": _normalize_battery_level(battery_level),
+        "battery_status": str(battery_status).upper() if battery_status else None,
+        "last_sync_time": str(last_sync_time) if last_sync_time else None,
+        "message": str(message or ""),
+        "reauth_url": str(reauth_url) if reauth_url else None,
+    }
+
+
+def _heart_contract(
+    status,
+    *,
+    bpm=None,
+    measured_at=None,
+    age_seconds=None,
+    message="",
+):
+    """The one and only live-heart JSON contract."""
+    status = status if status in {"ok", "no_data", "reauth", "unavailable"} else "unavailable"
+    normalized_bpm = None
+    try:
+        normalized_bpm = int(bpm) if bpm is not None else None
+    except Exception:
+        normalized_bpm = None
+
+    if status == "ok" and normalized_bpm is None:
+        status = "no_data"
+        message = "لا توجد قراءة نبض متاحة حتى الآن."
+
+    normalized_age = None
+    try:
+        normalized_age = max(0, int(age_seconds)) if age_seconds is not None else None
+    except Exception:
+        normalized_age = None
+
+    return {
+        "ok": status == "ok",
+        "status": status,
+        "bpm": normalized_bpm,
+        "measured_at": str(measured_at) if measured_at else None,
+        "age_seconds": normalized_age,
+        "stale": normalized_age is None or normalized_age > 120,
+        "needs_reauth": status == "reauth",
+        "message": str(message or ""),
+    }
+
+
+def _device_status_payload():
+    devices = get_paired_devices()
+    trackers = [
+        d for d in devices
+        if str(d.get("deviceType", "")).upper() != "SCALE"
+    ]
+    candidates = trackers or devices
+
+    if not candidates:
+        return _device_contract(
+            "unavailable",
+            message="لم أجد سوارًا مقترنًا في Google Health.",
+        )
+
+    device = max(
+        candidates,
+        key=lambda d: _parse_google_timestamp(d.get("lastSyncTime")),
+    )
+
+    return _device_contract(
+        "ok",
+        device=device.get("deviceVersion") or "Fitbit",
+        battery_level=device.get("batteryLevel"),
+        battery_status=device.get("batteryStatus"),
+        last_sync_time=device.get("lastSyncTime"),
+        message="تم جلب حالة السوار.",
+    )
+
+
+def _iso_age_seconds(value):
+    if not value:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        return max(0, int((now - dt.astimezone(datetime.timezone.utc)).total_seconds()))
+    except Exception:
+        return None
+
+
+def _live_heart_payload():
+    current = get_current_heart_rate()
+    if not current:
+        cached = _cache_get("heart:last_valid", 72 * 3600)
+        if cached and cached.get("bpm") and cached.get("measured_at"):
+            cached = dict(cached)
+            cached["age_seconds"] = _iso_age_seconds(cached.get("measured_at"))
+            cached["stale"] = True
+            cached["message"] = "آخر قراءة نبض محفوظة من Fitbit."
+            return cached
+        return _heart_contract(
+            "no_data",
+            message="لا توجد قراءة نبض موثقة بوقت مطابق حتى الآن.",
+        )
+
+    bpm, measured_dt = current
+
+    # BPM and time must still belong to the same Google Health data point.
+    if bpm is None or measured_dt is None:
+        cached = _cache_get("heart:last_valid", 72 * 3600)
+        if cached and cached.get("bpm") and cached.get("measured_at"):
+            return cached
+        return _heart_contract(
+            "no_data",
+            message="وصلت بيانات نبض غير مكتملة وتم رفض عرضها.",
+        )
+
+    measured_at = measured_dt.isoformat()
+    age_seconds = _iso_age_seconds(measured_at)
+    payload = _heart_contract(
+        "ok",
+        bpm=bpm,
+        measured_at=measured_at,
+        age_seconds=age_seconds,
+        message="تم جلب أحدث قراءة نبض موثقة.",
+    )
+    _cache_set("heart:last_valid", payload)
+    return payload
+
+
+def _safe_device_status_payload():
+    try:
+        return _device_status_payload()
+    except TokenExpiredError:
+        return _device_contract(
+            "reauth",
+            message="يحتاج تجديد ربط Google Health.",
+            reauth_url=_reauth_url(),
+        )
+    except GoogleHealthError as exc:
+        text = str(exc)
+        needs_reauth = (
+            "403" in text
+            or "PERMISSION_DENIED" in text
+            or "insufficient" in text.lower()
+        )
+        if needs_reauth:
+            return _device_contract(
+                "reauth",
+                message="جدد الربط مرة واحدة لتفعيل حالة السوار.",
+                reauth_url=_reauth_url(),
+            )
+        return _device_contract(
+            "unavailable",
+            message="حالة السوار غير متاحة مؤقتًا.",
+        )
+    except Exception:
+        return _device_contract(
+            "unavailable",
+            message="حالة السوار غير متاحة مؤقتًا.",
+        )
+
+
+def _safe_live_heart_payload():
+    try:
+        return _live_heart_payload()
+    except TokenExpiredError:
+        return _heart_contract(
+            "reauth",
+            message="يحتاج تجديد ربط Google Health.",
+        )
+    except GoogleHealthError:
+        return _heart_contract(
+            "unavailable",
+            message="تعذر جلب قراءة نبض جديدة مؤقتًا.",
+        )
+    except Exception:
+        return _heart_contract(
+            "unavailable",
+            message="النبض غير متاح مؤقتًا.",
+        )
+
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ALLOWED_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -54,10 +391,17 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_SCOPES = (
     "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly "
+    "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.writeonly "
+    "https://www.googleapis.com/auth/googlehealth.location.readonly "
     "https://www.googleapis.com/auth/googlehealth.sleep.readonly "
-    "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly"
+    "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly "
+    "https://www.googleapis.com/auth/googlehealth.settings.readonly"
 )
 REAUTH_REDIRECT = f"{PUBLIC_BASE_URL}/reauth/callback"
+
+
+
+
 
 
 def _reauth_state():
@@ -1496,9 +1840,26 @@ def _dashboard_payload(date_str=None):
 @app.route("/api/ios/dashboard")
 def ios_dashboard():
     err = _ios_auth()
-    if err: return err
-    try: return jsonify({"ok": True, "dashboard": _dashboard_payload(request.args.get("date"))})
-    except Exception as e: return jsonify({"error": str(e)}), 500
+    if err:
+        return err
+    try:
+        date_str = request.args.get("date")
+        force = request.args.get("force") == "1"
+        key = f"dashboard:{date_str or 'today'}"
+        ttl = 45 if not date_str else 600
+        payload = None if force else _cache_get(key, ttl)
+        cache_hit = payload is not None
+
+        if payload is None:
+            started = time.monotonic()
+            payload = _dashboard_payload(date_str)
+            payload["_server_ms"] = int((time.monotonic() - started) * 1000)
+            payload["_updated_at"] = datetime.datetime.utcnow().isoformat()
+            _cache_set(key, payload)
+
+        return jsonify({"ok": True, "dashboard": payload, "cache_hit": cache_hit})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/ios/week")
 def ios_week():
@@ -1506,6 +1867,578 @@ def ios_week():
     if err: return err
     try: return jsonify({"ok": True, "days": get_week_summary_for(request.args.get("end"))})
     except Exception as e: return jsonify({"error": str(e)}), 500
+
+
+def _sleep_stage_key(raw_type):
+    raw = str(raw_type or "").lower()
+    if "deep" in raw or "slow" in raw:
+        return "deep"
+    if "rem" in raw:
+        return "rem"
+    if "awake" in raw or "wake" in raw:
+        return "awake"
+    return "light"
+
+
+def _round_sleep_minutes(total_seconds):
+    try:
+        seconds = max(0, int(total_seconds or 0))
+    except Exception:
+        seconds = 0
+    return int((seconds + 30) // 60)
+
+
+def _sleep_details_ios(sleep):
+    if not sleep:
+        return None
+
+    total = _sleep_minutes_ios({"sleep": sleep})
+    bucket_seconds = {"deep": 0, "light": 0, "rem": 0, "awake": 0}
+    stages = []
+
+    for stage in sleep.get("_stages_timeline", []) or []:
+        stage_type = _sleep_stage_key(stage.get("type"))
+        start = stage.get("start")
+        end = stage.get("end")
+
+        duration_seconds = stage.get("duration_seconds")
+        if duration_seconds is None and start and end:
+            try:
+                duration_seconds = max(0, int(round((end - start).total_seconds())))
+            except Exception:
+                duration_seconds = 0
+
+        try:
+            duration_seconds = max(0, int(duration_seconds or 0))
+        except Exception:
+            duration_seconds = 0
+
+        bucket_seconds[stage_type] += duration_seconds
+
+        if start and end:
+            stages.append({
+                "type": stage_type,
+                "start": start.isoformat() if hasattr(start, "isoformat") else str(start),
+                "end": end.isoformat() if hasattr(end, "isoformat") else str(end),
+                "duration_minutes": _round_sleep_minutes(duration_seconds),
+            })
+
+    start = sleep.get("_local_start")
+    end = sleep.get("_local_end")
+
+    return {
+        "start": start.isoformat() if hasattr(start, "isoformat") else None,
+        "end": end.isoformat() if hasattr(end, "isoformat") else None,
+        "total_minutes": total,
+        "deep_minutes": _round_sleep_minutes(bucket_seconds["deep"]),
+        "light_minutes": _round_sleep_minutes(bucket_seconds["light"]),
+        "rem_minutes": _round_sleep_minutes(bucket_seconds["rem"]),
+        "awake_minutes": _round_sleep_minutes(bucket_seconds["awake"]),
+        "stages": stages,
+    }
+
+@app.route("/api/ios/connection")
+def ios_connection():
+    err = _ios_auth()
+    if err: return err
+    connected, needs_reauth = False, False
+    message = "الاتصال غير متاح"
+    try:
+        get_access_token()
+        connected = True
+        message = "Google Health متصل وجاهز"
+    except TokenExpiredError:
+        needs_reauth = True
+        message = "انتهت صلاحية الربط ويحتاج تجديد"
+    except Exception as e:
+        message = str(e)
+    return jsonify({
+        "ok": True,
+        "connected": connected,
+        "needs_reauth": needs_reauth,
+        "token_updated_at": token_store.token_updated_at(),
+        "reauth_url": _reauth_url(),
+        "message": message,
+    })
+
+@app.route("/api/ios/connection/token", methods=["POST"])
+def ios_connection_token():
+    err = _ios_auth()
+    if err: return err
+    x = request.get_json(silent=True) or {}
+    refresh = (x.get("refresh_token") or "").strip()
+    if len(refresh) < 20:
+        return jsonify({"error": "التوكن غير صالح"}), 400
+    token_store.save_refresh_token(refresh)
+    try:
+        from google_health_client import _token_cache
+        _token_cache["access_token"] = None
+        _token_cache["expires_at"] = 0
+        get_access_token()
+        connected, needs_reauth, message = True, False, "تم حفظ التوكن والاتصال بنجاح"
+    except TokenExpiredError:
+        connected, needs_reauth, message = False, True, "تم الحفظ لكن التوكن يحتاج موافقة جديدة"
+    except Exception as e:
+        connected, needs_reauth, message = False, False, str(e)
+    return jsonify({
+        "ok": True,
+        "connected": connected,
+        "needs_reauth": needs_reauth,
+        "token_updated_at": token_store.token_updated_at(),
+        "reauth_url": _reauth_url(),
+        "message": message,
+    })
+
+
+
+def _token_service(service_id, name, status, message, *, updated_at=None,
+                   can_auto_refresh=False, external_action_required=False,
+                   renewal_mode="check_only"):
+    return {
+        "id": service_id,
+        "name": name,
+        "status": status,
+        "message": message,
+        "updated_at": updated_at,
+        "can_auto_refresh": bool(can_auto_refresh),
+        "external_action_required": bool(external_action_required),
+        "renewal_mode": renewal_mode,
+    }
+
+
+def _check_telegram_token():
+    if not BOT_TOKEN:
+        return _token_service(
+            "telegram_bot", "Telegram Bot", "missing",
+            "TELEGRAM_BOT_TOKEN غير موجود في Railway.",
+            external_action_required=True,
+            renewal_mode="botfather",
+        )
+    try:
+        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=10)
+        data = resp.json() if resp.content else {}
+        if resp.status_code == 200 and data.get("ok"):
+            username = ((data.get("result") or {}).get("username") or "البوت")
+            return _token_service(
+                "telegram_bot", "Telegram Bot", "ok",
+                f"التوكن صالح ومتصل بـ @{username}.",
+                renewal_mode="non_expiring",
+            )
+        return _token_service(
+            "telegram_bot", "Telegram Bot", "invalid",
+            "توكن Telegram غير صالح أو تم إلغاؤه من BotFather.",
+            external_action_required=True,
+            renewal_mode="botfather",
+        )
+    except requests.RequestException:
+        return _token_service(
+            "telegram_bot", "Telegram Bot", "unavailable",
+            "تعذر الوصول إلى Telegram الآن؛ لم يتم تغيير التوكن.",
+            renewal_mode="check_only",
+        )
+
+
+def _check_gemini_key(api_key=None):
+    key = (api_key or token_store.get_gemini_api_key() or "").strip()
+    updated = token_store.token_updated_at("gemini_api_key")
+    if not key:
+        return _token_service(
+            "gemini_api", "Gemini API", "missing",
+            "GEMINI_API_KEY غير موجود.",
+            updated_at=updated,
+            external_action_required=True,
+            renewal_mode="manual_replace",
+        )
+    try:
+        resp = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={"key": key},
+            timeout=12,
+        )
+        if resp.status_code == 200:
+            return _token_service(
+                "gemini_api", "Gemini API", "ok",
+                "المفتاح صالح والمدرب الذكي جاهز.",
+                updated_at=updated,
+                renewal_mode="non_expiring",
+            )
+        return _token_service(
+            "gemini_api", "Gemini API", "invalid",
+            f"المفتاح مرفوض من Gemini ({resp.status_code}).",
+            updated_at=updated,
+            external_action_required=True,
+            renewal_mode="manual_replace",
+        )
+    except requests.RequestException:
+        return _token_service(
+            "gemini_api", "Gemini API", "unavailable",
+            "تعذر الوصول إلى Gemini الآن؛ لم يتم تغيير المفتاح.",
+            updated_at=updated,
+            renewal_mode="check_only",
+        )
+
+
+def _token_center_payload(force_google=False):
+    services = []
+
+    services.append(_token_service(
+        "railway", "Railway", "ok", "الخادم يعمل ويستقبل طلبات التطبيق.",
+        renewal_mode="not_required",
+    ))
+
+    if force_google:
+        try:
+            from google_health_client import _token_cache
+            _token_cache["access_token"] = None
+            _token_cache["expires_at"] = 0
+        except Exception:
+            pass
+
+    google_needs_reauth = False
+    try:
+        get_access_token()
+        services.append(_token_service(
+            "google_health", "Google Health", "ok",
+            "تم فحص وتجديد Access Token تلقائيًا.",
+            updated_at=token_store.token_updated_at("google_refresh_token"),
+            can_auto_refresh=True,
+            renewal_mode="oauth_refresh",
+        ))
+    except TokenExpiredError:
+        google_needs_reauth = True
+        services.append(_token_service(
+            "google_health", "Google Health", "reauth",
+            "Refresh Token انتهى؛ اضغط إعادة ربط Google وأكمل السماح.",
+            updated_at=token_store.token_updated_at("google_refresh_token"),
+            can_auto_refresh=True,
+            external_action_required=True,
+            renewal_mode="oauth_reauth",
+        ))
+    except Exception as exc:
+        services.append(_token_service(
+            "google_health", "Google Health", "unavailable",
+            f"تعذر فحص Google Health: {str(exc)[:120]}",
+            updated_at=token_store.token_updated_at("google_refresh_token"),
+            can_auto_refresh=True,
+            renewal_mode="oauth_refresh",
+        ))
+
+    google_client_ok = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+    services.append(_token_service(
+        "google_oauth_client", "Google OAuth Client",
+        "ok" if google_client_ok else "missing",
+        "Client ID وClient Secret موجودان." if google_client_ok else "بيانات Google OAuth ناقصة في Railway.",
+        external_action_required=not google_client_ok,
+        renewal_mode="non_expiring",
+    ))
+
+    services.append(_check_telegram_token())
+    services.append(_check_gemini_key())
+    services.append(_token_service(
+        "ios_api", "iPhone API Key", "ok",
+        "مفتاح التطبيق صالح؛ هذا الطلب وصل للخادم بنجاح.",
+        renewal_mode="non_expiring",
+    ))
+
+    healthy = sum(1 for item in services if item["status"] == "ok")
+    attention = len(services) - healthy
+    summary = (
+        f"كل الخدمات سليمة ({healthy}/{len(services)})."
+        if attention == 0 else
+        f"تم الفحص: {healthy} سليمة و{attention} تحتاج انتباه."
+    )
+    return {
+        "ok": True,
+        "checked_at": datetime.datetime.utcnow().isoformat(),
+        "needs_google_reauth": google_needs_reauth,
+        "reauth_url": _reauth_url(),
+        "summary": summary,
+        "services": services,
+    }
+
+
+@app.route("/api/ios/tokens/status")
+def ios_tokens_status():
+    err = _ios_auth()
+    if err:
+        return err
+    return jsonify(_token_center_payload(force_google=False))
+
+
+@app.route("/api/ios/tokens/refresh-all", methods=["POST"])
+def ios_tokens_refresh_all():
+    err = _ios_auth()
+    if err:
+        return err
+    return jsonify(_token_center_payload(force_google=True))
+
+
+@app.route("/api/ios/tokens/gemini", methods=["POST"])
+def ios_tokens_gemini():
+    err = _ios_auth()
+    if err:
+        return err
+    payload = request.get_json(silent=True) or {}
+    api_key = str(payload.get("api_key") or "").strip()
+    if len(api_key) < 20:
+        return jsonify({"error": "مفتاح Gemini قصير أو غير صالح."}), 400
+    check = _check_gemini_key(api_key)
+    if check["status"] != "ok":
+        return jsonify({"error": check["message"]}), 400
+    token_store.save_gemini_api_key(api_key)
+    return jsonify(_token_center_payload(force_google=False))
+
+
+@app.route("/api/ios/health/day")
+def ios_health_day():
+    """Compatibility endpoint for old app builds."""
+    err = _ios_auth()
+    if err:
+        return err
+    try:
+        date_str = request.args.get("date") or _local_today_iso()
+        force = request.args.get("force") == "1"
+        payload, cache_hit = _health_archive_cached(
+            "summary",
+            date_str,
+            lambda: {
+                "ok": True,
+                "dashboard": _dashboard_payload(date_str),
+                "sleep": _sleep_details_ios(get_sleep(date_str)),
+            },
+            force,
+        )
+        return jsonify({**payload, "cache_hit": cache_hit})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ios/health/sleep")
+def ios_health_sleep():
+    err = _ios_auth()
+    if err:
+        return err
+    try:
+        date_str = request.args.get("date") or _local_today_iso()
+        force = request.args.get("force") == "1"
+        payload, cache_hit = _health_archive_cached(
+            "sleep", date_str, lambda: _payload_sleep(date_str), force
+        )
+        return jsonify({**payload, "cache_hit": cache_hit})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ios/health/heart")
+def ios_health_heart():
+    err = _ios_auth()
+    if err:
+        return err
+    try:
+        date_str = request.args.get("date") or _local_today_iso()
+        force = request.args.get("force") == "1"
+        payload, cache_hit = _health_archive_cached(
+            "heart", date_str, lambda: _payload_heart(date_str), force
+        )
+        return jsonify({**payload, "cache_hit": cache_hit})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ios/health/activity")
+def ios_health_activity():
+    err = _ios_auth()
+    if err:
+        return err
+    try:
+        date_str = request.args.get("date") or _local_today_iso()
+        force = request.args.get("force") == "1"
+        payload, cache_hit = _health_archive_cached(
+            "activity", date_str, lambda: _payload_activity(date_str), force
+        )
+        return jsonify({**payload, "cache_hit": cache_hit})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ios/health/readiness")
+def ios_health_readiness():
+    err = _ios_auth()
+    if err:
+        return err
+    try:
+        date_str = request.args.get("date") or _local_today_iso()
+        force = request.args.get("force") == "1"
+        payload, cache_hit = _health_archive_cached(
+            "readiness", date_str, lambda: _payload_readiness(date_str), force
+        )
+        return jsonify({**payload, "cache_hit": cache_hit})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ios/health/summary")
+def ios_health_summary():
+    err = _ios_auth()
+    if err:
+        return err
+    try:
+        date_str = request.args.get("date") or _local_today_iso()
+        force = request.args.get("force") == "1"
+        payload, cache_hit = _health_archive_cached(
+            "summary", date_str, lambda: _payload_summary(date_str), force
+        )
+        return jsonify({**payload, "cache_hit": cache_hit})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ios/device/status")
+def ios_device_status():
+    err = _ios_auth()
+    if err:
+        return err
+
+    force = request.args.get("force") == "1"
+    payload = None if force else _cache_get("device:status", 30)
+
+    if payload is None:
+        payload = _safe_device_status_payload()
+        _cache_set("device:status", payload)
+
+    return jsonify(payload)
+
+
+@app.route("/api/ios/heart/live")
+def ios_heart_live():
+    err = _ios_auth()
+    if err:
+        return err
+
+    # Intentionally no Railway cache: always ask for the newest available reading.
+    return jsonify(_safe_live_heart_payload())
+
+
+@app.route("/api/ios/diagnostics")
+def ios_diagnostics():
+    err = _ios_auth()
+    if err:
+        return err
+
+    result = {
+        "ok": True,
+        "railway": {
+            "status": "ok",
+            "message": "Railway متصل.",
+        },
+        "token": {
+            "status": "unknown",
+            "message": "لم يتم فحص التوكن بعد.",
+        },
+        "device": {
+            "status": "unknown",
+            "message": "لم يتم فحص حالة السوار بعد.",
+        },
+        "heart": {
+            "status": "unknown",
+            "message": "لم يتم فحص النبض بعد.",
+            "bpm": None,
+            "measured_at": None,
+            "age_seconds": None,
+        },
+        "checked_at": datetime.datetime.utcnow().isoformat(),
+    }
+
+    try:
+        get_access_token()
+        result["token"] = {
+            "status": "ok",
+            "message": "توكن Google Health صالح.",
+        }
+    except TokenExpiredError:
+        result["token"] = {
+            "status": "reauth",
+            "message": "التوكن يحتاج تجديد الربط.",
+        }
+    except Exception:
+        result["token"] = {
+            "status": "unavailable",
+            "message": "تعذر التحقق من التوكن.",
+        }
+
+    device = _safe_device_status_payload()
+    result["device"] = {
+        "status": device["status"],
+        "message": device["message"],
+        "battery_level": device["battery_level"],
+        "last_sync_time": device["last_sync_time"],
+    }
+
+    heart = _safe_live_heart_payload()
+    result["heart"] = {
+        "status": heart["status"],
+        "message": heart["message"],
+        "bpm": heart["bpm"],
+        "measured_at": heart["measured_at"],
+        "age_seconds": heart["age_seconds"],
+    }
+
+    return jsonify(result)
+
+
+
+
+@app.route("/api/ios/body")
+def ios_body_summary():
+    err = _ios_auth()
+    if err: return err
+    return jsonify({"ok": True, **wellness_tracker.extended_body_summary()})
+
+@app.route("/api/ios/body/weight", methods=["POST"])
+def ios_body_weight():
+    err = _ios_auth()
+    if err: return err
+    x = request.get_json(silent=True) or {}
+    try:
+        gym_tracker.add_body_weight(float(x.get("weight")))
+        return jsonify({"ok": True, **wellness_tracker.extended_body_summary()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/api/ios/body/weight/delete", methods=["POST", "DELETE"])
+def ios_body_weight_delete():
+    err = _ios_auth()
+    if err: return err
+    x = request.get_json(silent=True) or {}
+    try:
+        entry_id = int(x.get("id"))
+        if not gym_tracker.delete_body_weight(entry_id):
+            return jsonify({"error": "تسجيل الوزن غير موجود"}), 404
+        return jsonify({"ok": True, **wellness_tracker.extended_body_summary()})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/ios/body/profile", methods=["POST"])
+def ios_body_profile():
+    err = _ios_auth()
+    if err: return err
+    x = request.get_json(silent=True) or {}
+    try:
+        target = float(x["target_weight"]) if x.get("target_weight") not in (None, "") else None
+        calories = int(x["daily_calories"]) if x.get("daily_calories") not in (None, "") else None
+        protein = int(x["protein_grams"]) if x.get("protein_grams") not in (None, "") else None
+        carbs = int(x["carb_grams"]) if x.get("carb_grams") not in (None, "") else None
+        fat = int(x["fat_grams"]) if x.get("fat_grams") not in (None, "") else None
+        if target is not None and not 25 <= target <= 350: raise ValueError("الهدف غير صالح")
+        if calories is not None and not 500 <= calories <= 10000: raise ValueError("السعرات غير صالحة")
+        if protein is not None and not 0 <= protein <= 500: raise ValueError("البروتين غير صالح")
+        if carbs is not None and not 0 <= carbs <= 1200: raise ValueError("الكارب غير صالح")
+        if fat is not None and not 0 <= fat <= 500: raise ValueError("الدهون غير صالحة")
+        wellness_tracker.save_profile_macros(target, calories, protein, carbs, fat)
+        return jsonify({"ok": True, **wellness_tracker.extended_body_summary()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 @app.route("/api/ios/plan")
 def ios_plan():
@@ -1524,9 +2457,11 @@ def ios_workout_context():
     owner = str(ALLOWED_CHAT_ID or "ios-owner")
     gym_tracker.start_exercise(owner, day_key, exercise)
     last = gym_tracker.get_last_session(day_key, exercise)
+    if last:
+        last["sets"] = wellness_tracker.decorate_sets(last.get("sets", []))
     rec = recommend_next_weight(day_key, exercise)
     return jsonify({"ok": True, "day_label": day["label"], "exercise": exercise,
-                    "today_sets": gym_tracker.get_today_sets(day_key, exercise),
+                    "today_sets": wellness_tracker.decorate_sets(gym_tracker.get_today_sets(day_key, exercise)),
                     "last_session": last, "recommendation": rec})
 
 @app.route("/api/ios/workout/set", methods=["POST"])
@@ -1542,13 +2477,19 @@ def ios_workout_set():
         if not (1 <= reps <= 999 and 0 <= weight <= 1000): raise ValueError
     except Exception: return jsonify({"error": "تأكد من الوزن والعدات"}), 400
     owner = str(ALLOWED_CHAT_ID or "ios-owner")
-    pending = gym_tracker.get_pending(owner)
-    if not pending or pending["day_key"] != day_key or pending["exercise"] != exercise:
-        gym_tracker.start_exercise(owner, day_key, exercise)
-    set_number = gym_tracker.record_set(owner, reps, weight)
+    saved = gym_tracker.record_set_direct(day_key, exercise, reps, weight)
+    set_number = saved["set_number"]
+    wellness_tracker.save_set_feedback(saved["id"], x.get("rpe"), bool(x.get("pain")), x.get("note") or "")
     events = detect_pr(day_key, exercise, reps, weight, set_number=set_number)
-    for event in events: gym_tracker.save_pr(owner, day_key, exercise, event)
-    return jsonify({"ok": True, "saved_set": set_number, "today_sets": gym_tracker.get_today_sets(day_key, exercise), "pr_events": events})
+    for event in events:
+        gym_tracker.save_pr(owner, day_key, exercise, event)
+    _invalidate_ios_cache()
+    return jsonify({
+        "ok": True,
+        "saved_set": set_number,
+        "today_sets": wellness_tracker.decorate_sets(gym_tracker.get_today_sets(day_key, exercise)),
+        "pr_events": events,
+    })
 
 @app.route("/api/ios/workout/edit", methods=["POST"])
 def ios_workout_edit():
@@ -1557,11 +2498,27 @@ def ios_workout_edit():
     x = request.get_json(silent=True) or {}
     day_key, idx = x.get("day"), x.get("idx")
     _, exercise = _resolve_exercise(day_key, idx)
-    try: set_number, reps, weight = int(x["set_number"]), int(x["reps"]), float(x["weight"])
-    except Exception: return jsonify({"error":"بيانات غير صالحة"}), 400
-    if not exercise or not gym_tracker.update_set(day_key, exercise, set_number, reps, weight):
+    try:
+        reps, weight = int(x["reps"]), float(x["weight"])
+        set_id = int(x["id"]) if x.get("id") is not None else None
+        set_number = int(x["set_number"]) if x.get("set_number") is not None else None
+    except Exception:
+        return jsonify({"error":"بيانات غير صالحة"}), 400
+
+    if not exercise:
+        return jsonify({"error":"التمرين غير موجود"}), 404
+
+    updated = (
+        gym_tracker.update_set_by_id(set_id, reps, weight)
+        if set_id is not None
+        else gym_tracker.update_set(day_key, exercise, set_number, reps, weight)
+    )
+    if not updated:
         return jsonify({"error":"لم أجد الجولة"}), 404
-    return jsonify({"ok": True, "today_sets": gym_tracker.get_today_sets(day_key, exercise)})
+    if set_id is not None and any(key in x for key in ("rpe", "pain", "note")):
+        wellness_tracker.save_set_feedback(set_id, x.get("rpe"), bool(x.get("pain")), x.get("note") or "")
+    _invalidate_ios_cache()
+    return jsonify({"ok": True, "today_sets": wellness_tracker.decorate_sets(gym_tracker.get_today_sets(day_key, exercise))})
 
 @app.route("/api/ios/exercise/add", methods=["POST"])
 def ios_exercise_add():
@@ -1578,6 +2535,72 @@ def ios_exercise_delete():
     x = request.get_json(silent=True) or {}
     return jsonify({"ok": bool(gym_tracker.delete_exercise(x.get("day"), x.get("name")))})
 
+@app.route("/api/ios/exercise/rename", methods=["POST"])
+def ios_exercise_rename():
+    err = _ios_auth()
+    if err: return err
+    x = request.get_json(silent=True) or {}
+    try:
+        gym_tracker.rename_exercise(x.get("day"), x.get("old_name"), x.get("new_name"))
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/ios/exercise/reorder", methods=["POST"])
+def ios_exercise_reorder():
+    err = _ios_auth()
+    if err: return err
+    x = request.get_json(silent=True) or {}
+    try:
+        gym_tracker.reorder_exercises(x.get("day"), x.get("exercises") or [])
+        _invalidate_ios_cache()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/ios/exercise/move", methods=["POST"])
+def ios_exercise_move():
+    err = _ios_auth()
+    if err: return err
+    x = request.get_json(silent=True) or {}
+    try:
+        gym_tracker.move_exercise(x.get("source_day"), x.get("target_day"), x.get("name"))
+        _invalidate_ios_cache()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/api/ios/section/add", methods=["POST"])
+def ios_section_add():
+    err = _ios_auth()
+    if err: return err
+    x = request.get_json(silent=True) or {}
+    try:
+        key = gym_tracker.add_section(x.get("label"))
+        return jsonify({"ok": True, "key": key})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/api/ios/section/rename", methods=["POST"])
+def ios_section_rename():
+    err = _ios_auth()
+    if err: return err
+    x = request.get_json(silent=True) or {}
+    try:
+        gym_tracker.rename_section(x.get("day"), x.get("label"))
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/api/ios/section/delete", methods=["POST"])
+def ios_section_delete():
+    err = _ios_auth()
+    if err: return err
+    x = request.get_json(silent=True) or {}
+    return jsonify({"ok": bool(gym_tracker.delete_section(x.get("day")))})
+
 @app.route("/api/ios/history")
 def ios_history():
     err = _ios_auth()
@@ -1593,47 +2616,670 @@ def ios_history():
 @app.route("/api/ios/history/edit", methods=["POST"])
 def ios_history_edit():
     err = _ios_auth()
-    if err: return err
+    if err:
+        return err
     x = request.get_json(silent=True) or {}
-    try: ok = gym_tracker.update_history_set(int(x["id"]), int(x["reps"]), float(x["weight"]))
-    except Exception: return jsonify({"error":"بيانات غير صالحة"}), 400
+    try:
+        ok = gym_tracker.update_history_set(int(x["id"]), int(x["reps"]), float(x["weight"]))
+    except Exception:
+        return jsonify({"error":"بيانات غير صالحة"}), 400
+
+    if ok:
+        owner = str(ALLOWED_CHAT_ID or "ios-owner")
+        gym_tracker.rebuild_analytics(owner)
+        _invalidate_ios_cache()
+
     return jsonify({"ok":bool(ok)}), (200 if ok else 404)
 
 @app.route("/api/ios/history/delete", methods=["POST"])
 def ios_history_delete():
     err = _ios_auth()
-    if err: return err
+    if err:
+        return err
     x = request.get_json(silent=True) or {}
-    try: ok = gym_tracker.delete_history_set(int(x["id"]))
-    except Exception: ok = False
+    try:
+        ok = gym_tracker.delete_history_set(int(x["id"]))
+    except Exception:
+        ok = False
+
+    if ok:
+        owner = str(ALLOWED_CHAT_ID or "ios-owner")
+        gym_tracker.rebuild_analytics(owner)
+        _invalidate_ios_cache()
+
     return jsonify({"ok":bool(ok)}), (200 if ok else 404)
+
+@app.route("/api/ios/analytics/rebuild", methods=["POST"])
+def ios_analytics_rebuild():
+    err = _ios_auth()
+    if err:
+        return err
+    owner = str(ALLOWED_CHAT_ID or "ios-owner")
+    try:
+        result = gym_tracker.rebuild_analytics(owner)
+        _invalidate_ios_cache()
+        return jsonify({
+            "ok": True,
+            "message": "تمت إعادة بناء التحليلات والأرقام الشخصية من السجل الحالي.",
+            "sets_scanned": result["sets_scanned"],
+            "prs_created": result["prs_created"],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/ios/coach", methods=["POST"])
 def ios_coach():
     err = _ios_auth()
-    if err: return err
-    x = request.get_json(silent=True) or {}; q = (x.get("message") or "").strip()
-    if not q: return jsonify({"error":"اكتب سؤالك"}), 400
+    if err:
+        return err
+
+    x = request.get_json(silent=True) or {}
+    q = (x.get("message") or "").strip()
+    if not q:
+        return jsonify({"error": "اكتب سؤالك"}), 400
+
     owner = str(ALLOWED_CHAT_ID or "ios-owner")
+
     try:
-        today = get_today_summary(); week = get_week_summary()
-        hist = gym_tracker.get_history(owner, limit=12)
-        context = coach_context(today)
-        answer = ask_coach(q, week, today, gym_context=context, history=hist)
-        gym_tracker.save_message(owner, "user", q); gym_tracker.save_message(owner, "model", answer)
-        return jsonify({"ok":True, "answer":answer})
-    except Exception as e: return jsonify({"error":str(e)}), 500
+        today = get_today_summary()
+        week = get_week_summary()
+
+        # Conversation memory only.
+        hist = gym_tracker.get_history(owner, limit=16)
+
+        # Fresh DB context on EVERY message:
+        # current plan + added exercises + deleted/inactive historical exercises
+        # + recent detailed sets + progress + load + PRs.
+        personal_context = gym_tracker.build_full_coach_context(
+            question=q,
+            recent_dates=14,
+        )
+
+        readiness_context = coach_context(today)
+        full_context = (
+            readiness_context
+            + "\n\n"
+            + personal_context
+            + "\n\n"
+            + wellness_tracker.coach_context()
+            + "\n\n"
+            + activity_tracker.coach_context()
+        ).strip()
+
+        answer = ask_coach(
+            q,
+            week,
+            today,
+            gym_context=full_context,
+            history=hist,
+        )
+
+        gym_tracker.save_message(owner, "user", q)
+        gym_tracker.save_message(owner, "model", answer)
+        return jsonify({"ok": True, "answer": answer})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/ios/insights")
 def ios_insights():
     err = _ios_auth()
+    if err:
+        return err
+    try:
+        force = request.args.get("force") == "1"
+        key = "insights:latest"
+        payload = None if force else _cache_get(key, 300)
+
+        if payload is None:
+            started = time.monotonic()
+            today = get_today_summary()
+            payload = {
+                "ok": True,
+                "readiness": format_readiness(today),
+                "today_plan": today_plan(today),
+                "progress": progress_report(),
+                "balance": format_muscle_balance(),
+                "next_weights": format_next_suggestions(),
+                "weekly_report": weekly_report(today),
+                "updated_at": datetime.datetime.utcnow().isoformat(),
+                "server_ms": int((time.monotonic() - started) * 1000),
+            }
+            _cache_set(key, payload)
+
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"error":str(e)}), 500
+
+# ---------------------------------------------------------------------------
+# FitbitAir 2.0 — nutrition, body progress, reports, and workout intelligence
+# ---------------------------------------------------------------------------
+
+def _decode_ios_image(value, max_bytes=7_000_000):
+    raw = str(value or "")
+    if raw.startswith("data:") and "," in raw:
+        raw = raw.split(",", 1)[1]
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except Exception as exc:
+        raise ValueError("الصورة غير صالحة") from exc
+    if not data or len(data) > max_bytes:
+        raise ValueError("حجم الصورة غير صالح")
+    return data
+
+
+def _nutrition_image_prompt(mode):
+    if mode == "meal":
+        return """حلل صورة الوجبة كتقدير فقط. أرجع JSON فقط بهذا الشكل:
+{
+  "name": "اسم مختصر للوجبة",
+  "serving_grams": 100,
+  "calories_per_100": 0,
+  "protein_per_100": 0,
+  "carbs_per_100": 0,
+  "fat_per_100": 0,
+  "estimated_total_grams": 0,
+  "estimated_total_calories": 0,
+  "items": [{"name":"","estimated_grams":0,"calories":0,"protein":0,"carbs":0,"fat":0}],
+  "confidence": "منخفض|متوسط|مرتفع",
+  "notes": "وضح أن التقدير يتأثر بالحجم والزيت وطريقة الطبخ"
+}
+اجعل القيم الغذائية per_100 محسوبة لكل 100غ من مجموع الوجبة، ولا تدّعي الدقة الطبية. لا تتعرف على هوية أي شخص إن ظهر في الصورة."""
+    return """اقرأ جدول القيم الغذائية وواجهة العبوة من الصورة. أرجع JSON فقط بهذا الشكل:
+{
+  "name": "اسم المنتج",
+  "brand": "العلامة إن ظهرت",
+  "serving_grams": 0,
+  "calories_per_100": 0,
+  "protein_per_100": 0,
+  "carbs_per_100": 0,
+  "fat_per_100": 0,
+  "confidence": "منخفض|متوسط|مرتفع",
+  "notes": "أي ملاحظة عن القيم أو الحصة"
+}
+حوّل القيم إلى لكل 100غ إن كانت العبوة تعرضها للحصة فقط. إذا رقم غير واضح اجعله 0 واذكر ذلك في notes. لا تخمّن اسم منتج غير ظاهر."""
+
+
+@app.route("/api/ios/nutrition/day")
+def ios_nutrition_day():
+    err = _ios_auth()
+    if err: return err
+    date = request.args.get("date") or wellness_tracker.qatar_today()
+    return jsonify({"ok": True, **wellness_tracker.nutrition_day(date)})
+
+
+@app.route("/api/ios/nutrition/range")
+def ios_nutrition_range():
+    err = _ios_auth()
     if err: return err
     try:
-        today = get_today_summary()
-        return jsonify({"ok":True, "readiness":format_readiness(today), "today_plan":today_plan(today),
-                        "progress":progress_report(), "balance":format_muscle_balance(),
-                        "next_weights":format_next_suggestions(), "weekly_report":weekly_report(today)})
-    except Exception as e: return jsonify({"error":str(e)}), 500
+        days = int(request.args.get("days", 7))
+    except Exception:
+        days = 7
+    return jsonify({"ok": True, **wellness_tracker.nutrition_range(days)})
+
+
+@app.route("/api/ios/nutrition/log", methods=["POST"])
+def ios_nutrition_log():
+    err = _ios_auth()
+    if err: return err
+    try:
+        payload = request.get_json(silent=True) or {}
+        result = wellness_tracker.log_food(payload)
+        return jsonify({"ok": True, **result})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/ios/nutrition/log/delete", methods=["POST", "DELETE"])
+def ios_nutrition_log_delete():
+    err = _ios_auth()
+    if err:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    raw_id = payload.get("id") or request.args.get("id")
+    try:
+        log_date = wellness_tracker.delete_food(int(raw_id))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"تعذر حذف العنصر: {exc}"}), 400
+
+    if not log_date:
+        return jsonify({"ok": False, "error": "العنصر غير موجود أو تم حذفه مسبقًا."}), 404
+
+    return jsonify({"ok": True, **wellness_tracker.nutrition_day(log_date)})
+
+
+@app.route("/api/ios/nutrition/products")
+def ios_nutrition_products():
+    err = _ios_auth()
+    if err: return err
+    query = request.args.get("q", "")
+    favorites = request.args.get("favorites") == "1"
+    return jsonify({"ok": True, "products": wellness_tracker.list_products(query, favorites)})
+
+
+@app.route("/api/ios/nutrition/product/barcode")
+def ios_nutrition_barcode():
+    err = _ios_auth()
+    if err: return err
+    try:
+        result = wellness_tracker.lookup_barcode(request.args.get("code", ""))
+        return jsonify({"ok": True, **result})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
+@app.route("/api/ios/nutrition/product/favorite", methods=["POST"])
+def ios_nutrition_favorite():
+    err = _ios_auth()
+    if err: return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        product = wellness_tracker.toggle_favorite(int(payload.get("id")), bool(payload.get("favorite")))
+        return jsonify({"ok": True, "product": product})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/ios/nutrition/analyze-image", methods=["POST"])
+def ios_nutrition_analyze_image():
+    err = _ios_auth()
+    if err: return err
+    payload = request.get_json(silent=True) or {}
+    mode = "meal" if payload.get("mode") == "meal" else "label"
+    try:
+        image = _decode_ios_image(payload.get("image_base64"))
+        result = analyze_images_json(
+            _nutrition_image_prompt(mode),
+            [(image, payload.get("mime_type") or "image/jpeg")],
+            max_tokens=1900,
+            temperature=0.12,
+        )
+        if not isinstance(result, dict):
+            raise ValueError("تعذر فهم نتيجة الصورة")
+        # Normalize numeric values to make the iOS contract stable.
+        for key in ("serving_grams", "calories_per_100", "protein_per_100", "carbs_per_100", "fat_per_100", "estimated_total_grams", "estimated_total_calories"):
+            if key in result:
+                try: result[key] = max(0, float(result.get(key) or 0))
+                except Exception: result[key] = 0
+        result["source"] = "gemini_" + mode
+        result["mode"] = mode
+        return jsonify({"ok": True, "analysis": result})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/ios/body/progress")
+def ios_body_progress():
+    err = _ios_auth()
+    if err: return err
+    return jsonify({"ok": True, **wellness_tracker.body_progress()})
+
+
+@app.route("/api/ios/body/measurement", methods=["POST"])
+def ios_body_measurement():
+    err = _ios_auth()
+    if err: return err
+    try:
+        result = wellness_tracker.save_measurement(request.get_json(silent=True) or {})
+        return jsonify({"ok": True, **result})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/ios/body/analyze", methods=["POST"])
+def ios_body_analyze():
+    err = _ios_auth()
+    if err: return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        baseline = _decode_ios_image(payload.get("baseline_image_base64"))
+        current = _decode_ios_image(payload.get("current_image_base64"))
+        pose = payload.get("pose") or "front"
+        prompt = f"""قارن صورتي تقدم جسم لنفس الشخص في وضعية {pose}. الصورة الأولى أقدم والثانية أحدث.
+أرجع JSON فقط:
+{{
+  "summary": "ملخص عربي مباشر ومحترم للتغيرات المرئية",
+  "visible_changes": ["تغير مرئي 1", "تغير مرئي 2"],
+  "areas_improved": ["مناطق ظهر فيها تحسن إن وجد"],
+  "areas_to_focus": ["مناطق تدريب مقترحة بدون انتقاد جارح"],
+  "confidence": "منخفض|متوسط|مرتفع",
+  "photo_consistency": "مدى تشابه الإضاءة والزاوية",
+  "estimated_body_fat_range": "نطاق تقريبي واسع أو غير متاح"
+}}
+قواعد: لا تتعرف على هوية الشخص، لا تشخص مرضًا، لا تعط نسبة دهون دقيقة، واذكر إذا اختلاف الإضاءة أو الوقفة يمنع المقارنة. ركز على المقارنة وليس الحكم على الشكل."""
+        result = analyze_images_json(prompt, [(baseline, "image/jpeg"), (current, "image/jpeg")], max_tokens=1800, temperature=0.15)
+        if not isinstance(result, dict):
+            raise ValueError("تعذر فهم نتيجة المقارنة")
+        saved = wellness_tracker.save_body_analysis({
+            **result,
+            "baseline_date": payload.get("baseline_date"),
+            "current_date": payload.get("current_date"),
+            "pose": pose,
+        })
+        return jsonify({"ok": True, "analysis": {**result, **saved}})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/ios/workout/session", methods=["POST"])
+def ios_workout_session():
+    err = _ios_auth()
+    if err: return err
+    try:
+        return jsonify({"ok": True, "session": wellness_tracker.log_session(request.get_json(silent=True) or {})})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/ios/workout/alternatives")
+def ios_workout_alternatives():
+    err = _ios_auth()
+    if err: return err
+    exercise = " ".join((request.args.get("exercise") or "").split())
+    if len(exercise) < 2:
+        return jsonify({"error": "اسم التمرين مطلوب"}), 400
+    cached = wellness_tracker.cached_alternatives(exercise)
+    if cached:
+        return jsonify({"ok": True, "exercise": exercise, "alternatives": cached, "cached": True})
+    try:
+        result = generate_structured_json(
+            f'''أنت مدرب مقاومة. أعط بدائل آمنة وعملية للتمرين التالي: {exercise}.
+أرجع JSON فقط: {{"alternatives":["اسم البديل — سبب قصير","..."]}}.
+اختر 5 بدائل تغطي جهاز، دامبل، كيبل أو وزن جسم إن أمكن. لا تقدم بديلًا مؤلمًا أو تشخيصًا طبيًا.''',
+            max_tokens=850,
+            temperature=0.22,
+        )
+        alternatives = result.get("alternatives", []) if isinstance(result, dict) else []
+        alternatives = wellness_tracker.save_alternatives(exercise, alternatives)
+        return jsonify({"ok": True, "exercise": exercise, "alternatives": alternatives, "cached": False})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+def _daily_report_fallback(dashboard, nutrition, body):
+    sleep = dashboard.get("sleep_minutes")
+    rest = dashboard.get("resting_hr")
+    steps = dashboard.get("steps")
+    totals = nutrition.get("totals", {})
+    parts = []
+    if sleep is not None: parts.append(f"نمت {sleep // 60}س و{sleep % 60}د")
+    if rest is not None: parts.append(f"نبض الراحة {rest}")
+    if steps is not None: parts.append(f"خطواتك {steps}")
+    if totals.get("protein"): parts.append(f"سجلت {totals['protein']:g}غ بروتين")
+    summary = "، ".join(parts) if parts else "بيانات اليوم ما زالت محدودة؛ حدّث المزامنة وسجل أكلك للحصول على تقرير أدق."
+    return {"summary": summary + ".", "details": dashboard.get("today_plan") or "استمر على خطتك الحالية."}
+
+
+def _make_report(report_type, force=False):
+    today_date = wellness_tracker.qatar_today()
+    report_date = today_date if report_type == "daily" else f"{today_date}-week"
+    if not force:
+        cached = wellness_tracker.get_report(report_type, report_date)
+        if cached:
+            return {
+                "report_type": report_type,
+                "date": report_date,
+                "summary": cached["summary"],
+                "details": cached.get("details") or "",
+                "created_at": cached.get("created_at"),
+                "cached": True,
+            }
+
+    if report_type == "daily":
+        dashboard = _dashboard_payload(today_date)
+        nutrition = wellness_tracker.nutrition_day(today_date)
+        body = wellness_tracker.body_progress(12)
+        workout = gym_tracker.get_day_summary(datetime.datetime.utcnow().date().isoformat())
+        prompt = f'''اكتب تقرير أحمد اليومي بالعربية الخليجية الواضحة باستخدام البيانات الفعلية فقط.
+بيانات الصحة: {json.dumps(dashboard, ensure_ascii=False)}
+التغذية: {json.dumps(nutrition, ensure_ascii=False)}
+قياسات الجسم: {json.dumps(body.get("latest"), ensure_ascii=False)}
+تمرين اليوم: {json.dumps(workout, ensure_ascii=False)}
+النشاطات الهوائية والرياضية: {activity_tracker.coach_context(days=3)}
+أرجع JSON فقط: {{"summary":"فقرة قصيرة جدًا","details":"4 نقاط عملية مرقمة كنص واحد","readiness_label":"","nutrition_note":"","training_note":""}}.
+لا تخترع بيانات، وإذا شيء ناقص قل إنه غير مسجل.'''
+        try:
+            result = generate_structured_json(prompt, max_tokens=1300, temperature=0.2)
+            summary = str(result.get("summary") or "").strip()
+            detail_parts = [result.get("details"), result.get("nutrition_note"), result.get("training_note")]
+            details = "\n".join(str(x).strip() for x in detail_parts if x)
+            if not summary: raise ValueError
+        except Exception:
+            fallback = _daily_report_fallback(dashboard, nutrition, body)
+            summary, details = fallback["summary"], fallback["details"]
+    else:
+        nutrition = wellness_tracker.nutrition_range(7)
+        body = wellness_tracker.body_progress(30)
+        workout_context = gym_tracker.build_full_coach_context(question="تقرير أسبوعي", recent_dates=7)
+        wellness_context = wellness_tracker.coach_context()
+        prompt = f'''أنشئ تقرير أسبوعي احترافي لأحمد مبنيًا على البيانات التالية فقط:
+التغذية: {json.dumps(nutrition, ensure_ascii=False)}
+الجسم: {json.dumps(body, ensure_ascii=False)}
+التمارين: {workout_context}
+مؤشرات RPE والألم والجلسات: {wellness_context}
+النشاطات الهوائية والرياضية: {activity_tracker.coach_context(days=7)}
+أرجع JSON فقط: {{"summary":"ملخص أسبوعي قصير","details":"الإنجازات ثم الملاحظات ثم 3 أهداف للأسبوع القادم"}}.
+لا تخترع أرقامًا ولا تقدم تشخيصًا طبيًا.'''
+        try:
+            result = generate_structured_json(prompt, max_tokens=1700, temperature=0.24)
+            summary = str(result.get("summary") or "").strip()
+            details = str(result.get("details") or "").strip()
+            if not summary: raise ValueError
+        except Exception:
+            summary = f"سجلت الأكل في {nutrition['logged_days']} أيام خلال الأسبوع."
+            details = "افتح سجل التمارين والتغذية وأكمل الأيام الناقصة للحصول على تحليل أسبوعي أدق."
+    saved = wellness_tracker.save_report(report_type, report_date, summary, details)
+    return {**saved, "cached": False}
+
+
+
+# ---------------------------------------------------------------------------
+# FitbitAir activity sessions
+# ---------------------------------------------------------------------------
+
+def _activity_google_payload(session):
+    return {
+        "client_id": session.get("client_id"),
+        "exercise_type": session.get("exercise_type"),
+        "display_name": session.get("display_name"),
+        "start_time": session.get("start_time"),
+        "end_time": session.get("end_time"),
+        "duration_seconds": session.get("duration_seconds"),
+        "active_seconds": session.get("active_seconds"),
+        "distance_meters": session.get("distance_meters"),
+        "calories": session.get("calories"),
+        "steps": session.get("steps"),
+        "average_heart_rate": session.get("average_heart_rate"),
+        "average_speed_mps": session.get("average_speed_mps"),
+        "elevation_gain_meters": session.get("elevation_gain_meters"),
+        "active_zone_minutes": session.get("active_zone_minutes"),
+        "has_gps": session.get("has_gps"),
+        "notes": session.get("notes"),
+        "utc_offset_seconds": 10800,
+    }
+
+
+def _operation_name(operation):
+    if not isinstance(operation, dict):
+        return None
+    return operation.get("name") or (operation.get("response") or {}).get("name")
+
+
+@app.route("/api/ios/activities")
+def ios_activities_list():
+    err = _ios_auth()
+    if err: return err
+    try:
+        days = max(1, min(365, int(request.args.get("days", 30))))
+        return jsonify({
+            "ok": True,
+            "sessions": activity_tracker.list_sessions(days=days),
+            "summary": activity_tracker.summary(days=min(days, 30)),
+            "reauth_url": _reauth_url(),
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/ios/activities/session", methods=["POST"])
+def ios_activity_session_save():
+    err = _ios_auth()
+    if err: return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        session = activity_tracker.save_local_session(payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    # Idempotency: if the iPhone retries after a slow/lost response, do not create
+    # the same Google Health exercise twice.
+    if session.get("sync_status") in {"uploaded", "synced"}:
+        return jsonify({
+            "ok": True,
+            "session": session,
+            "google_status": session.get("sync_status"),
+            "message": "النشاط محفوظ ومتزامن مسبقًا",
+            "needs_reauth": False,
+            "reauth_url": None,
+        })
+
+    google_status = "local_only"
+    google_message = "تم الحفظ داخل FitbitAir"
+    needs_reauth = False
+    try:
+        operation = create_exercise_session(_activity_google_payload(session))
+        session = activity_tracker.mark_google_sync(session["id"], "uploaded", _operation_name(operation))
+        google_status = "uploaded"
+        google_message = "تم الحفظ وإرساله إلى Google Health"
+    except TokenExpiredError as exc:
+        session = activity_tracker.mark_google_sync(session["id"], "needs_reauth", error=exc)
+        google_status = "needs_reauth"
+        google_message = "تم الحفظ داخل التطبيق ويحتاج تحديث صلاحيات Google"
+        needs_reauth = True
+    except GoogleHealthError as exc:
+        text = str(exc)
+        needs_reauth = any(code in text for code in ("401", "403", "PERMISSION_DENIED", "insufficient"))
+        status = "needs_reauth" if needs_reauth else "pending"
+        session = activity_tracker.mark_google_sync(session["id"], status, error=text)
+        google_status = status
+        google_message = "تم الحفظ محليًا وسيعاد إرسال النشاط بعد المزامنة"
+    _invalidate_ios_cache()
+    return jsonify({
+        "ok": True,
+        "session": session,
+        "google_status": google_status,
+        "message": google_message,
+        "needs_reauth": needs_reauth,
+        "reauth_url": _reauth_url() if needs_reauth else None,
+    })
+
+
+@app.route("/api/ios/activities/session/delete", methods=["POST", "DELETE"])
+def ios_activity_session_delete():
+    err = _ios_auth()
+    if err: return err
+    data = request.get_json(silent=True) or {}
+    try:
+        session_id = int(data.get("id"))
+    except Exception:
+        return jsonify({"error": "معرّف النشاط غير صالح"}), 400
+    try:
+        deleted = activity_tracker.delete_session(session_id)
+        if not deleted:
+            return jsonify({"error": "النشاط غير موجود"}), 404
+        _invalidate_ios_cache()
+        days = max(1, min(365, int(data.get("days", 30))))
+        return jsonify({
+            "ok": True,
+            "sessions": activity_tracker.list_sessions(days=days),
+            "summary": activity_tracker.summary(days=min(days, 30)),
+            "reauth_url": _reauth_url(),
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/ios/activities/sync", methods=["POST"])
+def ios_activities_sync():
+    err = _ios_auth()
+    if err: return err
+    data = request.get_json(silent=True) or {}
+    try:
+        days = max(1, min(90, int(data.get("days", 30))))
+        end = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+        start = end - datetime.timedelta(days=days)
+        points = list_exercises(
+            start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            reconcile=True,
+        )
+        result = activity_tracker.import_google_exercises(points)
+
+        # Retry local sessions that were not uploaded yet after permissions change.
+        uploaded = 0
+        for session in activity_tracker.list_sessions(days=days, limit=200):
+            if session.get("source") == "google_health" or session.get("sync_status") in {"synced", "uploaded"}:
+                continue
+            try:
+                operation = create_exercise_session(_activity_google_payload(session))
+                activity_tracker.mark_google_sync(session["id"], "uploaded", _operation_name(operation))
+                uploaded += 1
+            except Exception:
+                pass
+        _invalidate_ios_cache()
+        return jsonify({
+            "ok": True,
+            "imported": result["imported"],
+            "merged": result["merged"],
+            "uploaded": uploaded,
+            "sessions": activity_tracker.list_sessions(days=days),
+            "summary": activity_tracker.summary(days=min(days, 30)),
+            "message": "اكتملت مزامنة النشاطات",
+        })
+    except TokenExpiredError as exc:
+        return jsonify({"error": str(exc), "needs_reauth": True, "reauth_url": _reauth_url()}), 401
+    except GoogleHealthError as exc:
+        text = str(exc)
+        needs_reauth = any(code in text for code in ("401", "403", "PERMISSION_DENIED", "insufficient"))
+        return jsonify({"error": text, "needs_reauth": needs_reauth, "reauth_url": _reauth_url() if needs_reauth else None}), (403 if needs_reauth else 502)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/ios/activities/summary")
+def ios_activities_summary():
+    err = _ios_auth()
+    if err: return err
+    try:
+        days = max(1, min(365, int(request.args.get("days", 7))))
+        return jsonify({"ok": True, "summary": activity_tracker.summary(days)})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+@app.route("/api/ios/reports/daily")
+def ios_daily_report():
+    err = _ios_auth()
+    if err: return err
+    try:
+        return jsonify({"ok": True, "report": _make_report("daily", request.args.get("force") == "1")})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/ios/reports/weekly")
+def ios_weekly_wellness_report():
+    err = _ios_auth()
+    if err: return err
+    try:
+        return jsonify({"ok": True, "report": _make_report("weekly", request.args.get("force") == "1")})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 if __name__ == "__main__":
     app.run()
