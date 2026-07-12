@@ -16,6 +16,7 @@ struct MoreView: View {
                 VStack(spacing: 18) {
                     header
                     connectionCard
+                    bodyGoalsSection
                     archiveSection
                     intelligenceSection
                     appSection
@@ -82,7 +83,7 @@ struct MoreView: View {
 
                         if let urlString = status?.reauthURL, let url = URL(string: urlString) {
                             Link(destination: url) {
-                                Label("تجديد الربط", systemImage: "link.badge.plus")
+                                Label("تحديث الصلاحيات", systemImage: "link.badge.plus")
                                     .frame(maxWidth: .infinity).padding(.vertical, 12)
                                     .background(FitTheme.gradient, in: RoundedRectangle(cornerRadius: 15))
                                     .foregroundStyle(.black.opacity(0.82)).fontWeight(.bold)
@@ -95,6 +96,28 @@ struct MoreView: View {
                             .font(.footnote.weight(.semibold)).foregroundStyle(.white.opacity(0.55))
                     }
                     .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var bodyGoalsSection: some View {
+        VStack(spacing: 12) {
+            SectionHeader(title: "الجسم والتنشيف", subtitle: "الوزن، الهدف ومتوسط التقدم")
+            GlassCard(padding: 8) {
+                VStack(spacing: 2) {
+                    NavigationLink { BodyGoalsView() } label: {
+                        MoreRow(icon: "scalemass.fill", tint: FitTheme.accent, title: "متابعة الوزن والهدف", subtitle: "الوزن والخصر والسعرات والماكروز")
+                    }
+                    NavigationLink { WellnessView() } label: {
+                        MoreRow(icon: "fork.knife", tint: FitTheme.accentBlue, title: "سجل الطعام", subtitle: "باركود، تصوير الوجبات وحساب الماكروز")
+                    }
+                    NavigationLink { BodyProgressView() } label: {
+                        MoreRow(icon: "figure.arms.open", tint: FitTheme.accentPurple, title: "صور تطور الجسم", subtitle: "صور محلية ومقارنة اختيارية بواسطة Gemini")
+                    }
+                    NavigationLink { HistoryView() } label: {
+                        MoreRow(icon: "clock.arrow.circlepath", tint: FitTheme.warning, title: "سجل التمارين", subtitle: "الجولات والأوزان السابقة")
+                    }
                 }
             }
         }
@@ -156,8 +179,10 @@ struct MoreView: View {
             SectionHeader(title: "التطبيق")
             GlassCard(padding: 8) {
                 VStack(spacing: 2) {
+                    NavigationLink { NotificationSettingsView() } label: { MoreRow(icon: "bell.badge.fill", tint: FitTheme.warning, title: "الإشعارات المحلية", subtitle: "الراحة، التمرين، الماء، الكرياتين والنوم") }
+                    NavigationLink { TokenCenterView() } label: { MoreRow(icon: "key.viewfinder", tint: FitTheme.accent, title: "إدارة وتجديد التوكنات", subtitle: "فحص Google وTelegram وGemini بضغطة واحدة") }
                     MoreRow(icon: "lock.shield.fill", tint: FitTheme.positive, title: "نسخة شخصية", subtitle: "مخصصة لأحمد المري فقط", showsChevron: false)
-                    MoreRow(icon: "app.badge.checkmark.fill", tint: FitTheme.accent, title: "الإصدار", subtitle: "FitbitAir 1.0", showsChevron: false)
+                    MoreRow(icon: "app.badge.checkmark.fill", tint: FitTheme.accent, title: "الإصدار", subtitle: "FitbitAir 2.0", showsChevron: false)
                     MoreRow(icon: "server.rack", tint: FitTheme.accentBlue, title: "الخادم", subtitle: AppConfig.baseURL.host ?? "Railway", showsChevron: false)
                 }
             }
@@ -223,6 +248,526 @@ struct MoreView: View {
             .navigationTitle("إعدادات متقدمة").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("إغلاق") { showTokenEntry = false } } }
         }.preferredColorScheme(.dark)
+    }
+}
+
+
+private struct TokenCenterView: View {
+    @Environment(\.openURL) private var openURL
+    @State private var data: TokenCenterResponse?
+    @State private var loading = false
+    @State private var error: String?
+    @State private var actionMessage: String?
+    @State private var showGeminiEditor = false
+    @State private var geminiKey = ""
+
+    var body: some View {
+        ZStack {
+            AppBackground()
+            ScrollView {
+                VStack(spacing: 14) {
+                    summaryCard
+                    servicesCard
+                    actionCard
+                    explanationCard
+                }
+                .padding(18)
+            }
+            .refreshable { await load() }
+        }
+        .navigationTitle("إدارة التوكنات")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private var summaryCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 15)
+                            .fill(summaryTint.opacity(0.14))
+                            .frame(width: 50, height: 50)
+                        Image(systemName: summaryIcon)
+                            .font(.title3.bold())
+                            .foregroundStyle(summaryTint)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("مركز التوكنات")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                        Text(data?.summary ?? "جاري فحص الخدمات المستخدمة في التطبيق…")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.58))
+                    }
+                    Spacer()
+                    if loading { ProgressView().tint(FitTheme.accent) }
+                }
+
+                if let checkedAt = data?.checkedAt {
+                    HStack(spacing: 8) {
+                        Image(systemName: "clock.arrow.circlepath")
+                        Text("آخر فحص: \(checkedAt)")
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.42))
+                }
+
+                if let error { ErrorBanner(message: error) }
+                if let actionMessage {
+                    Text(actionMessage)
+                        .font(.caption)
+                        .foregroundStyle(FitTheme.positive)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private var servicesCard: some View {
+        GlassCard {
+            VStack(spacing: 0) {
+                if let services = data?.services, !services.isEmpty {
+                    ForEach(Array(services.enumerated()), id: \.element.id) { index, service in
+                        if index > 0 {
+                            Divider().overlay(Color.white.opacity(0.08))
+                        }
+                        tokenRow(service)
+                    }
+                } else {
+                    HStack {
+                        ProgressView().tint(FitTheme.accent)
+                        Text("جاري تحميل حالة التوكنات…")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.55))
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                }
+            }
+        }
+    }
+
+    private var actionCard: some View {
+        GlassCard {
+            VStack(spacing: 12) {
+                Button {
+                    Task { await refreshAll() }
+                } label: {
+                    Label(loading ? "جاري الفحص والتجديد…" : "فحص وتجديد الكل", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(loading)
+
+                if let urlString = data?.reauthURL,
+                   let url = URL(string: urlString),
+                   data?.needsGoogleReauth == true {
+                    Button {
+                        openURL(url)
+                    } label: {
+                        Label("إعادة ربط Google Health", systemImage: "link.badge.plus")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(FitTheme.cardStrong, in: RoundedRectangle(cornerRadius: 15))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white)
+                }
+
+                Button {
+                    withAnimation { showGeminiEditor.toggle() }
+                } label: {
+                    Label("استبدال مفتاح Gemini", systemImage: "sparkles")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+                .buttonStyle(.plain)
+
+                if showGeminiEditor {
+                    VStack(spacing: 10) {
+                        SecureField("الصق مفتاح Gemini الجديد", text: $geminiKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .padding(13)
+                            .background(FitTheme.cardStrong, in: RoundedRectangle(cornerRadius: 14))
+                            .foregroundStyle(.white)
+
+                        Button("فحص المفتاح وحفظه") {
+                            Task { await saveGemini() }
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(geminiKey.trimmingCharacters(in: .whitespacesAndNewlines).count < 20 || loading)
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+        }
+    }
+
+    private var explanationCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("طريقة العمل", systemImage: "info.circle.fill")
+                    .font(.headline)
+                    .foregroundStyle(FitTheme.accent)
+                Text("Google Access Token يتجدد تلقائيًا. إذا انتهى Refresh Token يفتح التطبيق صفحة موافقة Google ويحفظ التوكن الجديد داخل نفس قاعدة Railway تلقائيًا. مفاتيح Telegram وGemini لا يمكن اختراع بديل لها من التطبيق؛ يتم فحصها، وGemini يمكن استبداله هنا بدون الدخول إلى Railway.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.58))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func tokenRow(_ service: TokenServiceStatus) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(tint(for: service.status).opacity(0.13))
+                    .frame(width: 42, height: 42)
+                Image(systemName: icon(for: service.id))
+                    .foregroundStyle(tint(for: service.status))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(service.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Text(statusText(service.status))
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(tint(for: service.status))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(tint(for: service.status).opacity(0.12), in: Capsule())
+                }
+                Text(service.message)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+                if let updatedAt = service.updatedAt {
+                    Text("آخر تحديث: \(updatedAt)")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.34))
+                }
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(.vertical, 11)
+    }
+
+    private var summaryTint: Color {
+        guard let services = data?.services else { return FitTheme.accent }
+        if services.contains(where: { $0.status == "invalid" || $0.status == "missing" }) { return FitTheme.danger }
+        if services.contains(where: { $0.status == "reauth" || $0.status == "unavailable" }) { return FitTheme.warning }
+        return FitTheme.positive
+    }
+
+    private var summaryIcon: String {
+        guard let services = data?.services, !services.isEmpty else { return "key.viewfinder" }
+        return services.allSatisfy { $0.status == "ok" }
+            ? "checkmark.shield.fill"
+            : "exclamationmark.shield.fill"
+    }
+
+    private func tint(for status: String) -> Color {
+        switch status {
+        case "ok": return FitTheme.positive
+        case "reauth", "unavailable": return FitTheme.warning
+        default: return FitTheme.danger
+        }
+    }
+
+    private func statusText(_ status: String) -> String {
+        switch status {
+        case "ok": return "سليم"
+        case "reauth": return "تجديد"
+        case "missing": return "ناقص"
+        case "invalid": return "غير صالح"
+        default: return "تعذر الفحص"
+        }
+    }
+
+    private func icon(for id: String) -> String {
+        switch id {
+        case "railway": return "server.rack"
+        case "google_health": return "heart.text.square.fill"
+        case "google_oauth_client": return "person.badge.key.fill"
+        case "telegram_bot": return "paperplane.fill"
+        case "gemini_api": return "sparkles"
+        case "ios_api": return "iphone.gen3"
+        default: return "key.fill"
+        }
+    }
+
+    private func load() async {
+        loading = true
+        error = nil
+        do {
+            data = try await APIClient.shared.tokenCenterStatus()
+        } catch {
+            self.error = error.localizedDescription
+        }
+        loading = false
+    }
+
+    private func refreshAll() async {
+        loading = true
+        error = nil
+        actionMessage = nil
+        do {
+            let response = try await APIClient.shared.refreshAllTokens()
+            data = response
+            actionMessage = response.needsGoogleReauth
+                ? "Google يحتاج موافقتك؛ تم فتح صفحة إعادة الربط."
+                : "تم فحص الخدمات وتجديد Google Access Token بنجاح."
+            if response.needsGoogleReauth, let url = URL(string: response.reauthURL) {
+                openURL(url)
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+        loading = false
+    }
+
+    private func saveGemini() async {
+        let cleanKey = geminiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanKey.count >= 20 else { return }
+        loading = true
+        error = nil
+        actionMessage = nil
+        do {
+            data = try await APIClient.shared.saveGeminiAPIKey(cleanKey)
+            geminiKey = ""
+            showGeminiEditor = false
+            actionMessage = "تم فحص مفتاح Gemini وحفظه داخل Railway بنجاح."
+        } catch {
+            self.error = error.localizedDescription
+        }
+        loading = false
+    }
+}
+
+
+private struct NotificationSettingsView: View {
+    @AppStorage("notifications.rest.enabled") private var restEnabled = true
+    @AppStorage("notifications.workout.enabled") private var workoutEnabled = false
+    @AppStorage("notifications.workout.minute") private var workoutMinute = 1020
+    @AppStorage("notifications.water.enabled") private var waterEnabled = false
+    @AppStorage("notifications.water.start") private var waterStartMinute = 540
+    @AppStorage("notifications.water.end") private var waterEndMinute = 1260
+    @AppStorage("notifications.water.interval") private var waterIntervalHours = 2
+    @AppStorage("notifications.creatine.enabled") private var creatineEnabled = false
+    @AppStorage("notifications.creatine.minute") private var creatineMinute = 720
+    @AppStorage("notifications.sleep.enabled") private var sleepEnabled = false
+    @AppStorage("notifications.sleep.minute") private var sleepMinute = 1380
+    @AppStorage("notifications.weight.enabled") private var weightEnabled = false
+    @AppStorage("notifications.weight.weekday") private var weightWeekday = 7
+    @AppStorage("notifications.weight.minute") private var weightMinute = 540
+
+    @State private var permissionText = "جاري التحقق…"
+    @State private var permissionGranted = false
+    @State private var saveMessage: String?
+
+    var body: some View {
+        ZStack {
+            AppBackground()
+            ScrollView {
+                VStack(spacing: 14) {
+                    permissionCard
+                    reminderCard
+                    saveButton
+                    if let saveMessage {
+                        Text(saveMessage)
+                            .font(.caption)
+                            .foregroundStyle(permissionGranted ? FitTheme.positive : FitTheme.warning)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .padding(18)
+            }
+        }
+        .navigationTitle("الإشعارات المحلية")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await refreshPermission() }
+    }
+
+    private var permissionCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Image(systemName: permissionGranted ? "bell.badge.fill" : "bell.slash.fill")
+                        .foregroundStyle(permissionGranted ? FitTheme.positive : FitTheme.warning)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("صلاحية الإشعارات").font(.headline).foregroundStyle(.white)
+                        Text(permissionText).font(.caption).foregroundStyle(.white.opacity(0.55))
+                    }
+                    Spacer()
+                }
+                if !permissionGranted {
+                    Button("تفعيل الإشعارات") {
+                        Task {
+                            permissionGranted = await LocalNotificationManager.shared.requestPermission()
+                            await refreshPermission()
+                            if permissionGranted { saveAndSchedule() }
+                        }
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                }
+            }
+        }
+    }
+
+    private var reminderCard: some View {
+        GlassCard {
+            VStack(spacing: 16) {
+                reminderToggle(icon: "timer", title: "انتهاء راحة الجولات", subtitle: "يصل حتى لو التطبيق بالخلفية", isOn: $restEnabled)
+                Divider().overlay(Color.white.opacity(0.08))
+
+                reminderToggle(icon: "dumbbell.fill", title: "موعد التمرين", subtitle: "تذكير يومي", isOn: $workoutEnabled)
+                if workoutEnabled { timePicker("وقت التمرين", minute: $workoutMinute) }
+                Divider().overlay(Color.white.opacity(0.08))
+
+                reminderToggle(icon: "drop.fill", title: "شرب الماء", subtitle: "من وقت البداية إلى وقت النهاية", isOn: $waterEnabled)
+                if waterEnabled {
+                    timePicker("بداية التذكير", minute: $waterStartMinute)
+                    timePicker("نهاية التذكير", minute: $waterEndMinute)
+                    Picker("كل", selection: $waterIntervalHours) {
+                        Text("كل ساعة").tag(1)
+                        Text("كل ساعتين").tag(2)
+                        Text("كل 3 ساعات").tag(3)
+                        Text("كل 4 ساعات").tag(4)
+                    }
+                    .pickerStyle(.menu)
+                    .tint(FitTheme.accent)
+                }
+                Divider().overlay(Color.white.opacity(0.08))
+
+                reminderToggle(icon: "capsule.fill", title: "الكرياتين", subtitle: "تذكير يومي", isOn: $creatineEnabled)
+                if creatineEnabled { timePicker("وقت الكرياتين", minute: $creatineMinute) }
+                Divider().overlay(Color.white.opacity(0.08))
+
+                reminderToggle(icon: "moon.stars.fill", title: "الاستعداد للنوم", subtitle: "تذكير يومي", isOn: $sleepEnabled)
+                if sleepEnabled { timePicker("وقت النوم", minute: $sleepMinute) }
+                Divider().overlay(Color.white.opacity(0.08))
+
+                reminderToggle(icon: "scalemass.fill", title: "تسجيل الوزن", subtitle: "مرة كل أسبوع", isOn: $weightEnabled)
+                if weightEnabled {
+                    Picker("اليوم", selection: $weightWeekday) {
+                        Text("الأحد").tag(1)
+                        Text("الاثنين").tag(2)
+                        Text("الثلاثاء").tag(3)
+                        Text("الأربعاء").tag(4)
+                        Text("الخميس").tag(5)
+                        Text("الجمعة").tag(6)
+                        Text("السبت").tag(7)
+                    }
+                    .pickerStyle(.menu)
+                    .tint(FitTheme.accent)
+                    timePicker("وقت الوزن", minute: $weightMinute)
+                }
+            }
+        }
+    }
+
+    private var saveButton: some View {
+        Button {
+            Task {
+                if !permissionGranted {
+                    permissionGranted = await LocalNotificationManager.shared.requestPermission()
+                    await refreshPermission()
+                }
+                saveAndSchedule()
+            }
+        } label: {
+            Label("حفظ وجدولة الإشعارات", systemImage: "checkmark.circle.fill")
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding()
+        }
+        .buttonStyle(PrimaryButtonStyle())
+    }
+
+    private func reminderToggle(icon: String, title: String, subtitle: String, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) {
+            HStack(spacing: 11) {
+                Image(systemName: icon).foregroundStyle(FitTheme.accent).frame(width: 24)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                    Text(subtitle).font(.caption2).foregroundStyle(.white.opacity(0.45))
+                }
+            }
+        }
+        .tint(FitTheme.accent)
+    }
+
+    private func timePicker(_ title: String, minute: Binding<Int>) -> some View {
+        DatePicker(title, selection: dateBinding(minute), displayedComponents: .hourAndMinute)
+            .datePickerStyle(.compact)
+            .environment(\.locale, Locale(identifier: "ar_QA"))
+            .tint(FitTheme.accent)
+            .foregroundStyle(.white)
+    }
+
+    private func dateBinding(_ minute: Binding<Int>) -> Binding<Date> {
+        Binding<Date>(
+            get: {
+                Calendar.current.date(bySettingHour: minute.wrappedValue / 60, minute: minute.wrappedValue % 60, second: 0, of: Date()) ?? Date()
+            },
+            set: { date in
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+                minute.wrappedValue = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+            }
+        )
+    }
+
+    private func refreshPermission() async {
+        let status = await LocalNotificationManager.shared.authorizationStatus()
+        await MainActor.run {
+            switch status {
+            case .authorized, .provisional, .ephemeral:
+                permissionGranted = true
+                permissionText = "مفعلة على هذا الآيفون"
+            case .denied:
+                permissionGranted = false
+                permissionText = "مرفوضة من إعدادات الآيفون"
+            case .notDetermined:
+                permissionGranted = false
+                permissionText = "لم يتم طلب الصلاحية بعد"
+            @unknown default:
+                permissionGranted = false
+                permissionText = "حالة الصلاحية غير معروفة"
+            }
+        }
+    }
+
+    private func saveAndSchedule() {
+        guard permissionGranted else {
+            saveMessage = "فعّل صلاحية الإشعارات أولًا من إعدادات الآيفون."
+            return
+        }
+        LocalNotificationManager.shared.rescheduleAll(
+            LocalReminderSettings(
+                workoutEnabled: workoutEnabled,
+                workoutMinute: workoutMinute,
+                waterEnabled: waterEnabled,
+                waterStartMinute: waterStartMinute,
+                waterEndMinute: waterEndMinute,
+                waterIntervalHours: waterIntervalHours,
+                creatineEnabled: creatineEnabled,
+                creatineMinute: creatineMinute,
+                sleepEnabled: sleepEnabled,
+                sleepMinute: sleepMinute,
+                weightEnabled: weightEnabled,
+                weightWeekday: weightWeekday,
+                weightMinute: weightMinute
+            )
+        )
+        saveMessage = "تم حفظ وجدولة الإشعارات على جهازك."
     }
 }
 
@@ -398,34 +943,38 @@ private struct SleepStageDetailSheet: View {
     }
 
     private func parseDate(_ value: String) -> Date? {
-        let timeZone = TimeZone(identifier: "Asia/Qatar") ?? .current
+        let qatar = TimeZone(identifier: "Asia/Qatar") ?? .current
         let hasExplicitZone = value.hasSuffix("Z")
+            || value.hasSuffix("z")
             || value.range(
                 of: #"[+-]\d{2}:?\d{2}$"#,
                 options: .regularExpression
             ) != nil
 
-        if !hasExplicitZone {
-            for format in [
-                "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
-                "yyyy-MM-dd'T'HH:mm:ss.SSS",
-                "yyyy-MM-dd'T'HH:mm:ss",
-                "yyyy-MM-dd HH:mm:ss"
-            ] {
-                let formatter = DateFormatter()
-                formatter.calendar = Calendar(identifier: .gregorian)
-                formatter.locale = Locale(identifier: "en_US_POSIX")
-                formatter.timeZone = timeZone
-                formatter.dateFormat = format
-                if let date = formatter.date(from: value) { return date }
-            }
+        if hasExplicitZone {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = iso.date(from: value) { return date }
+
+            iso.formatOptions = [.withInternetDateTime]
+            return iso.date(from: value)
         }
 
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = iso.date(from: value) { return date }
-        iso.formatOptions = [.withInternetDateTime]
-        return iso.date(from: value)
+        for format in [
+            "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss"
+        ] {
+            let formatter = DateFormatter()
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = qatar
+            formatter.dateFormat = format
+            if let date = formatter.date(from: value) { return date }
+        }
+
+        return nil
     }
 }
 
@@ -587,7 +1136,7 @@ enum HealthArchiveCategory: String, CaseIterable, Identifiable {
 
 private enum HealthArchiveLocalCache {
     private static func key(_ category: HealthArchiveCategory, _ date: String) -> String {
-        "fitbitair.archive.\(category.rawValue).\(date)"
+        "fitbitair.archive.v3.\(category.rawValue).\(date)"
     }
 
     static func load<T: Decodable>(_ type: T.Type, category: HealthArchiveCategory, date: String) -> T? {
@@ -912,45 +1461,38 @@ struct HealthArchiveView: View {
     }
 
     private func parseSleepDate(_ value: String) -> Date? {
-        let timeZone = TimeZone(identifier: "Asia/Qatar") ?? .current
-
-        // The personal backend returns local sleep wall-clock values without an offset.
-        // Treat those as Qatar local time so we do not add +3 hours a second time.
+        let qatar = TimeZone(identifier: "Asia/Qatar") ?? .current
         let hasExplicitZone = value.hasSuffix("Z")
+            || value.hasSuffix("z")
             || value.range(
                 of: #"[+-]\d{2}:?\d{2}$"#,
                 options: .regularExpression
             ) != nil
 
-        if !hasExplicitZone {
-            let localFormats = [
-                "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
-                "yyyy-MM-dd'T'HH:mm:ss.SSS",
-                "yyyy-MM-dd'T'HH:mm:ss",
-                "yyyy-MM-dd HH:mm:ss"
-            ]
+        if hasExplicitZone {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = iso.date(from: value) { return date }
 
-            for format in localFormats {
-                let formatter = DateFormatter()
-                formatter.calendar = Calendar(identifier: .gregorian)
-                formatter.locale = Locale(identifier: "en_US_POSIX")
-                formatter.timeZone = timeZone
-                formatter.dateFormat = format
-
-                if let date = formatter.date(from: value) {
-                    return date
-                }
-            }
+            iso.formatOptions = [.withInternetDateTime]
+            return iso.date(from: value)
         }
 
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = iso.date(from: value) {
-            return date
+        for format in [
+            "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss"
+        ] {
+            let formatter = DateFormatter()
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = qatar
+            formatter.dateFormat = format
+            if let date = formatter.date(from: value) { return date }
         }
 
-        iso.formatOptions = [.withInternetDateTime]
-        return iso.date(from: value)
+        return nil
     }
 
     private func sleepStageButton(
@@ -1117,5 +1659,191 @@ struct HealthArchiveView: View {
         if let d = Calendar.current.date(byAdding: .day, value: days, to: selectedDate), d <= Date() {
             selectedDate = d
         }
+    }
+}
+
+
+struct BodyGoalsView: View {
+    @State private var summary: BodySummaryResponse?
+    @State private var weight = ""
+    @State private var target = ""
+    @State private var calories = ""
+    @State private var protein = ""
+    @State private var carbs = ""
+    @State private var fat = ""
+    @State private var waist = ""
+    @State private var waistNote = ""
+    @State private var loading = true
+    @State private var saving = false
+    @State private var message: String?
+    @State private var error: String?
+
+    var body: some View {
+        ZStack {
+            AppBackground()
+            ScrollView {
+                VStack(spacing: 14) {
+                    if let summary {
+                        HStack(spacing: 10) {
+                            metric("الحالي", summary.latestWeight.map { "\($0.gymFormatted) كجم" } ?? "—", "scalemass")
+                            metric("متوسط 7", summary.average7.map { "\($0.gymFormatted) كجم" } ?? "—", "chart.line.downtrend.xyaxis")
+                        }
+                        HStack(spacing: 10) {
+                            metric("الهدف", summary.profile.targetWeight.map { "\($0.gymFormatted) كجم" } ?? "—", "target")
+                            metric("المتبقي", summary.remaining.map { "\(abs($0).gymFormatted) كجم" } ?? "—", "flag.checkered")
+                        }
+                        HStack(spacing: 10) {
+                            metric("آخر خصر", summary.latestWaist.map { "\($0.gymFormatted) سم" } ?? "—", "ruler")
+                            NavigationLink { BodyProgressView() } label: {
+                                metric("صور التطور", "فتح", "figure.arms.open")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if let projection = projectedGoalText(summary) {
+                            GlassCard {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "calendar.badge.clock")
+                                        .font(.title2)
+                                        .foregroundStyle(FitTheme.accent)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("تقدير الوصول للهدف").font(.headline).foregroundStyle(.white)
+                                        Text(projection).font(.subheadline).foregroundStyle(.white.opacity(0.65))
+                                    }
+                                    Spacer()
+                                }
+                            }
+                        }
+                    }
+
+                    GlassCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("تسجيل وزن جديد").font(.headline).foregroundStyle(.white)
+                            TextField("مثال: 69.2", text: $weight)
+                                .keyboardType(.decimalPad).textFieldStyle(.roundedBorder)
+                            Button("حفظ الوزن") { Task { await saveWeight() } }
+                                .buttonStyle(PrimaryButtonStyle()).disabled(saving || weight.isEmpty)
+                        }
+                    }
+
+                    GlassCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("محيط الخصر").font(.headline).foregroundStyle(.white)
+                            TextField("مثال: 78.5 سم", text: $waist)
+                                .keyboardType(.decimalPad).textFieldStyle(.roundedBorder)
+                            TextField("ملاحظة اختيارية", text: $waistNote)
+                                .textFieldStyle(.roundedBorder)
+                            Button("حفظ قياس الخصر") { Task { await saveWaist() } }
+                                .buttonStyle(PrimaryButtonStyle()).disabled(saving || waist.isEmpty)
+                        }
+                    }
+
+                    GlassCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("أهدافك").font(.headline).foregroundStyle(.white)
+                            TextField("الوزن المستهدف بالكيلو", text: $target).keyboardType(.decimalPad).textFieldStyle(.roundedBorder)
+                            TextField("السعرات اليومية", text: $calories).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
+                            TextField("البروتين اليومي بالجرام", text: $protein).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
+                            TextField("الكارب اليومي بالجرام", text: $carbs).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
+                            TextField("الدهون اليومية بالجرام", text: $fat).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
+                            Button("حفظ الأهداف") { Task { await saveProfile() } }
+                                .buttonStyle(PrimaryButtonStyle()).disabled(saving)
+                        }
+                    }
+
+                    if let entries = summary?.entries, !entries.isEmpty {
+                        GlassCard {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("آخر التسجيلات").font(.headline).foregroundStyle(.white)
+                                ForEach(entries.prefix(10)) { entry in
+                                    HStack {
+                                        Text(String(entry.loggedAt.prefix(10))).foregroundStyle(.white.opacity(0.6))
+                                        Spacer()
+                                        Text("\(entry.weight.gymFormatted) كجم").fontWeight(.semibold).foregroundStyle(.white)
+                                    }
+                                    Divider().overlay(.white.opacity(0.08))
+                                }
+                            }
+                        }
+                    }
+
+                    if let message { Text(message).foregroundStyle(FitTheme.positive).font(.footnote) }
+                    if let error { ErrorBanner(message: error) }
+                    if loading { ProgressView().tint(FitTheme.accent) }
+                }.padding(18)
+            }
+        }
+        .navigationTitle("الوزن والهدف")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+        .refreshable { await load() }
+    }
+
+    private func projectedGoalText(_ value: BodySummaryResponse) -> String? {
+        guard let remaining = value.remaining, let trend = value.trend7, abs(remaining) > 0.05 else {
+            return value.remaining.map { abs($0) <= 0.05 ? "وصلت لهدفك الحالي." : "سجّل أوزانًا أكثر حتى نحسب الاتجاه." }
+        }
+        let movingTowardGoal = (remaining > 0 && trend < -0.05) || (remaining < 0 && trend > 0.05)
+        guard movingTowardGoal else { return "اتجاه الوزن الحالي لا يتحرك نحو الهدف؛ راجع متوسط السعرات والالتزام." }
+        let periods = min(52, max(1, Int(ceil(abs(remaining / trend)))))
+        return "حوالي \(periods) أسابيع إذا استمر نفس اتجاه آخر التسجيلات. هذا تقدير وليس موعدًا مضمونًا."
+    }
+
+    private func metric(_ title: String, _ value: String, _ icon: String) -> some View {
+        GlassCard {
+            VStack(spacing: 8) {
+                Image(systemName: icon).foregroundStyle(FitTheme.accent)
+                Text(value).font(.title3.bold()).foregroundStyle(.white)
+                Text(title).font(.caption).foregroundStyle(.white.opacity(0.5))
+            }.frame(maxWidth: .infinity)
+        }
+    }
+
+    private func apply(_ value: BodySummaryResponse) {
+        summary = value
+        if target.isEmpty, let x = value.profile.targetWeight { target = x.gymFormatted }
+        if calories.isEmpty, let x = value.profile.dailyCalories { calories = String(x) }
+        if protein.isEmpty, let x = value.profile.proteinGrams { protein = String(x) }
+        if carbs.isEmpty, let x = value.profile.carbGrams { carbs = String(x) }
+        if fat.isEmpty, let x = value.profile.fatGrams { fat = String(x) }
+    }
+
+    private func load() async {
+        loading = true; error = nil
+        do { apply(try await APIClient.shared.bodySummary()) }
+        catch { self.error = error.localizedDescription }
+        loading = false
+    }
+
+    private func saveWeight() async {
+        guard let x = Double(weight) else { error = "اكتب الوزن بشكل صحيح"; return }
+        saving = true; error = nil
+        do { apply(try await APIClient.shared.addBodyWeight(x)); weight = ""; message = "تم حفظ الوزن" }
+        catch { self.error = error.localizedDescription }
+        saving = false
+    }
+
+    private func saveWaist() async {
+        guard let x = Double(waist) else { error = "اكتب محيط الخصر بشكل صحيح"; return }
+        saving = true; error = nil
+        do {
+            apply(try await APIClient.shared.addWaist(x, note: waistNote))
+            waist = ""; waistNote = ""; message = "تم حفظ قياس الخصر"
+        } catch { self.error = error.localizedDescription }
+        saving = false
+    }
+
+    private func saveProfile() async {
+        saving = true; error = nil
+        do {
+            let value = try await APIClient.shared.saveBodyProfile(
+                targetWeight: Double(target),
+                dailyCalories: Int(calories),
+                proteinGrams: Int(protein),
+                carbGrams: Int(carbs),
+                fatGrams: Int(fat)
+            )
+            apply(value); message = "تم حفظ أهدافك وسيستخدمها المدرب الذكي"
+        } catch { self.error = error.localizedDescription }
+        saving = false
     }
 }

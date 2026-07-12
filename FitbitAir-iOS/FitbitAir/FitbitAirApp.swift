@@ -1,5 +1,6 @@
 import SwiftUI
 import BackgroundTasks
+import UserNotifications
 
 @main
 struct FitbitAirApp: App {
@@ -7,6 +8,7 @@ struct FitbitAirApp: App {
 
     init() {
         BackgroundSyncManager.shared.register()
+        LocalNotificationManager.shared.configure()
     }
 
     var body: some Scene {
@@ -30,6 +32,135 @@ struct FitbitAirApp: App {
             }
         }
     }
+}
+
+
+final class LocalNotificationManager: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = LocalNotificationManager()
+
+    private let center = UNUserNotificationCenter.current()
+    private let restIdentifier = "fitbitair.rest.timer"
+    private let managedPrefix = "fitbitair.local."
+
+    private override init() {
+        super.init()
+    }
+
+    func configure() {
+        center.delegate = self
+    }
+
+    func requestPermission() async -> Bool {
+        do {
+            return try await center.requestAuthorization(options: [.alert, .sound, .badge])
+        } catch {
+            return false
+        }
+    }
+
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await center.notificationSettings().authorizationStatus
+    }
+
+    func scheduleRest(after seconds: Int, exercise: String) {
+        guard seconds > 0 else { return }
+        center.removePendingNotificationRequests(withIdentifiers: [restIdentifier])
+
+        let content = UNMutableNotificationContent()
+        content.title = "انتهت الراحة"
+        content.body = exercise.isEmpty ? "حان وقت الجولة التالية" : "حان وقت الجولة التالية في \(exercise)"
+        content.sound = .default
+        content.categoryIdentifier = "REST_TIMER"
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(max(1, seconds)), repeats: false)
+        let request = UNNotificationRequest(identifier: restIdentifier, content: content, trigger: trigger)
+        center.add(request)
+    }
+
+    func cancelRest() {
+        center.removePendingNotificationRequests(withIdentifiers: [restIdentifier])
+        center.removeDeliveredNotifications(withIdentifiers: [restIdentifier])
+    }
+
+    func rescheduleAll(_ settings: LocalReminderSettings) {
+        center.getPendingNotificationRequests { [weak self] requests in
+            guard let self else { return }
+            let ids = requests.map(\.identifier).filter { $0.hasPrefix(self.managedPrefix) }
+            self.center.removePendingNotificationRequests(withIdentifiers: ids)
+
+            if settings.workoutEnabled {
+                self.scheduleDaily(identifier: "workout", title: "موعد التمرين", body: "جاهز لتمرين اليوم؟ افتح FitbitAir وابدأ تسجيل الجولات.", minuteOfDay: settings.workoutMinute)
+            }
+            if settings.creatineEnabled {
+                self.scheduleDaily(identifier: "creatine", title: "تذكير الكرياتين", body: "خذ جرعتك اليومية وسجّل التزامك.", minuteOfDay: settings.creatineMinute)
+            }
+            if settings.sleepEnabled {
+                self.scheduleDaily(identifier: "sleep", title: "حان وقت الاستعداد للنوم", body: "خفف الإضاءة واستعد لنوم أفضل وتعافٍ أقوى.", minuteOfDay: settings.sleepMinute)
+            }
+            if settings.waterEnabled {
+                self.scheduleWaterReminders(startMinute: settings.waterStartMinute, endMinute: settings.waterEndMinute, intervalHours: settings.waterIntervalHours)
+            }
+            if settings.weightEnabled {
+                self.scheduleWeekly(identifier: "weight", title: "تسجيل الوزن الأسبوعي", body: "زن نفسك بنفس الظروف وسجّل الوزن لمتابعة المتوسط.", weekday: settings.weightWeekday, minuteOfDay: settings.weightMinute)
+            }
+        }
+    }
+
+    private func scheduleDaily(identifier: String, title: String, body: String, minuteOfDay: Int) {
+        var components = DateComponents()
+        components.hour = max(0, min(23, minuteOfDay / 60))
+        components.minute = max(0, min(59, minuteOfDay % 60))
+        add(identifier: managedPrefix + identifier, title: title, body: body, trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: true))
+    }
+
+    private func scheduleWeekly(identifier: String, title: String, body: String, weekday: Int, minuteOfDay: Int) {
+        var components = DateComponents()
+        components.weekday = max(1, min(7, weekday))
+        components.hour = max(0, min(23, minuteOfDay / 60))
+        components.minute = max(0, min(59, minuteOfDay % 60))
+        add(identifier: managedPrefix + identifier, title: title, body: body, trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: true))
+    }
+
+    private func scheduleWaterReminders(startMinute: Int, endMinute: Int, intervalHours: Int) {
+        let interval = max(1, intervalHours) * 60
+        let start = max(0, min(1439, startMinute))
+        let end = max(start, min(1439, endMinute))
+        var current = start
+        var index = 0
+        while current <= end && index < 16 {
+            scheduleDaily(identifier: "water.\(index)", title: "تذكير الماء", body: "اشرب ماء وحافظ على ترطيبك خلال اليوم.", minuteOfDay: current)
+            current += interval
+            index += 1
+        }
+    }
+
+    private func add(identifier: String, title: String, body: String, trigger: UNNotificationTrigger) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger))
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound, .badge]
+    }
+}
+
+struct LocalReminderSettings {
+    var workoutEnabled: Bool
+    var workoutMinute: Int
+    var waterEnabled: Bool
+    var waterStartMinute: Int
+    var waterEndMinute: Int
+    var waterIntervalHours: Int
+    var creatineEnabled: Bool
+    var creatineMinute: Int
+    var sleepEnabled: Bool
+    var sleepMinute: Int
+    var weightEnabled: Bool
+    var weightWeekday: Int
+    var weightMinute: Int
 }
 
 
@@ -316,14 +447,14 @@ private struct PersonalSplashView: View {
 }
 
 enum AppTab: String, CaseIterable, Identifiable {
-    case home, workout, history, coach, insights, more
+    case home, workout, nutrition, coach, insights, more
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .home: return "الرئيسية"
         case .workout: return "التمرين"
-        case .history: return "السجل"
+        case .nutrition: return "التغذية"
         case .coach: return "المدرب"
         case .insights: return "التحليلات"
         case .more: return "المزيد"
@@ -334,7 +465,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .home: return "house.fill"
         case .workout: return "dumbbell.fill"
-        case .history: return "clock.arrow.circlepath"
+        case .nutrition: return "fork.knife"
         case .coach: return "bubble.left.and.text.bubble.right.fill"
         case .insights: return "chart.line.uptrend.xyaxis"
         case .more: return "ellipsis.circle.fill"
@@ -355,8 +486,8 @@ struct RootView: View {
                     NavigationStack { HomeView() }
                 case .workout:
                     NavigationStack { WorkoutView() }
-                case .history:
-                    NavigationStack { HistoryView() }
+                case .nutrition:
+                    NavigationStack { WellnessView() }
                 case .coach:
                     CoachView()
                 case .insights:

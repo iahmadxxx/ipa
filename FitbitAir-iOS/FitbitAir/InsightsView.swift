@@ -2,6 +2,7 @@ import SwiftUI
 
 struct InsightsView: View {
     @State private var data: InsightsResponse?
+    @State private var weeklyWellness: FA2WellnessReport?
     @State private var errorMessage: String?
 
     var body: some View {
@@ -13,7 +14,10 @@ struct InsightsView: View {
                     InsightCard(icon: "🚀", title: "التقدم", text: data.progress)
                     InsightCard(icon: "⚖️", title: "توازن العضلات", text: data.balance)
                     InsightCard(icon: "🧠", title: "اقتراح الأوزان", text: data.nextWeights)
-                    InsightCard(icon: "📈", title: "التقرير الأسبوعي", text: data.weeklyReport)
+                    InsightCard(icon: "📈", title: "تقرير التمرين الأسبوعي", text: data.weeklyReport)
+                    if let weeklyWellness {
+                        InsightCard(icon: "✨", title: "التقرير الأسبوعي الشامل", text: weeklyWellness.summary + "\n\n" + weeklyWellness.details)
+                    }
                 } else if errorMessage == nil {
                     ProgressView("جاري التحليل…")
                         .padding(.top, 70)
@@ -35,6 +39,7 @@ struct InsightsView: View {
     private func load(force: Bool = false) async {
         do {
             data = try await APIClient.shared.insights(force: force)
+            weeklyWellness = try? await APIClient.shared.fa2Report(kind: "weekly", force: force)
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription

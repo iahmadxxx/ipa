@@ -65,8 +65,7 @@ struct HomeView: View {
     @State private var deviceStatusError: String?
     @State private var liveHeart: LiveHeartResponse?
     @State private var liveHeartMessage: String?
-    @State private var noTimestampHeartBPM: Int?
-    @State private var noTimestampHeartFirstSeen: Date?
+    @State private var dailyBrief: DailyBriefResponse?
 
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
@@ -77,6 +76,7 @@ struct HomeView: View {
                 dateSelector
                 if isToday {
                     deviceSyncCard
+                    if let dailyBrief { dailyBriefCard(dailyBrief) }
                 }
 
                 if let dashboard {
@@ -102,13 +102,15 @@ struct HomeView: View {
             async let dashboardTask: Void = load(force: true)
             async let deviceTask: Void = loadDeviceStatus(force: true)
             async let heartTask: Void = loadLiveHeart()
-            _ = await (dashboardTask, deviceTask, heartTask)
+            async let briefTask: Void = loadDailyBrief()
+            _ = await (dashboardTask, deviceTask, heartTask, briefTask)
         }
         .task {
             async let dashboardTask: Void = load(useLocalCache: true)
             async let deviceTask: Void = loadDeviceStatus()
             async let heartTask: Void = loadLiveHeart()
-            _ = await (dashboardTask, deviceTask, heartTask)
+            async let briefTask: Void = loadDailyBrief()
+            _ = await (dashboardTask, deviceTask, heartTask, briefTask)
         }
         .task(id: isToday) {
             guard isToday else { return }
@@ -139,7 +141,8 @@ struct HomeView: View {
                     async let dashboardTask: Void = load(force: true)
                     async let deviceTask: Void = loadDeviceStatus(force: true)
                     async let heartTask: Void = loadLiveHeart()
-                    _ = await (dashboardTask, deviceTask, heartTask)
+                    async let briefTask: Void = loadDailyBrief()
+                    _ = await (dashboardTask, deviceTask, heartTask, briefTask)
                 }
             }
             .disabled(loading)
@@ -248,6 +251,37 @@ struct HomeView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.white)
                 }
+            }
+        }
+    }
+
+    private func dailyBriefCard(_ brief: DailyBriefResponse) -> some View {
+        GlassCard(padding: 16) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 13).fill(FitTheme.accent.opacity(0.15)).frame(width: 42, height: 42)
+                        Image(systemName: "sparkles").foregroundStyle(FitTheme.accent)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("تقرير اليوم").font(.caption).foregroundStyle(.white.opacity(0.55))
+                        Text(brief.headline).font(.headline)
+                    }
+                    Spacer()
+                    Text("\(brief.recoveryScore)%")
+                        .font(.title3.bold().monospacedDigit())
+                        .foregroundStyle(FitTheme.accent)
+                }
+                Text(brief.summary)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.72))
+                Divider().overlay(Color.white.opacity(0.08))
+                Label(brief.workoutRecommendation, systemImage: "dumbbell.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.78))
+                Label(brief.nutritionRecommendation, systemImage: "fork.knife")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.78))
             }
         }
     }
@@ -383,6 +417,15 @@ struct HomeView: View {
         loading = false
     }
 
+    private func loadDailyBrief() async {
+        guard isToday else { return }
+        do {
+            dailyBrief = try await APIClient.shared.dailyBrief()
+        } catch {
+            // The normal dashboard stays usable if the optional brief is unavailable.
+        }
+    }
+
     private func loadDeviceStatus(force: Bool = false) async {
         do {
             deviceStatus = try await APIClient.shared.deviceStatus(force: force)
@@ -404,41 +447,24 @@ struct HomeView: View {
             let value = try await APIClient.shared.liveHeart()
             liveHeartMessage = value.message
 
-            guard value.ok, let bpm = value.bpm else {
-                if value.status == "no_data", liveHeart == nil {
+            // Strict rule: never show BPM without its matching measurement time.
+            guard value.ok,
+                  value.bpm != nil,
+                  let measuredAt = value.measuredAt,
+                  parseHealthDate(measuredAt) != nil
+            else {
+                liveHeart = nil
+                LiveHeartLocalCache.clear()
+                if value.status == "no_data" {
                     liveHeartMessage = value.message
                 }
                 return
             }
 
-            if value.measuredAt != nil {
-                // أفضل حالة: رقم + وقت قياس حقيقي.
-                noTimestampHeartBPM = nil
-                noTimestampHeartFirstSeen = nil
-                liveHeart = value
-                LiveHeartLocalCache.save(value)
-                return
-            }
-
-            // Google أعطى رقمًا بلا timestamp.
-            // لا نسمح لنفس الرقم أن يبقى معروضًا إلى ما لا نهاية.
-            if noTimestampHeartBPM != bpm {
-                noTimestampHeartBPM = bpm
-                noTimestampHeartFirstSeen = Date()
-                liveHeart = value
-                LiveHeartLocalCache.clear()
-                return
-            }
-
-            let age = Date().timeIntervalSince(noTimestampHeartFirstSeen ?? Date())
-            if age <= 180 {
-                liveHeart = value
-            } else {
-                liveHeart = nil
-                liveHeartMessage = "لم تصل قراءة نبض جديدة بوقت موثّق."
-            }
+            liveHeart = value
+            LiveHeartLocalCache.save(value)
         } catch {
-            liveHeartMessage = "تعذر جلب قراءة أحدث الآن."
+            liveHeartMessage = "تعذر جلب قراءة نبض موثقة الآن."
         }
     }
 
@@ -480,8 +506,11 @@ struct HomeView: View {
     }
 
     private var liveHeartTitle: String {
-        guard let value = liveHeart, value.bpm != nil else { return "النبض" }
-        guard value.measuredAt != nil else { return "آخر نبض متاح" }
+        guard let value = liveHeart,
+              value.bpm != nil,
+              value.measuredAt != nil
+        else { return "النبض" }
+
         return effectiveHeartAgeSeconds(value) <= 120 ? "النبض الآن" : "آخر نبض متاح"
     }
 
@@ -491,19 +520,18 @@ struct HomeView: View {
     }
 
     private var liveHeartSubtitle: String? {
-        guard let value = liveHeart, value.bpm != nil else {
-            return liveHeartMessage ?? "لا توجد قراءة نبض متاحة"
-        }
-
-        guard let measuredAt = value.measuredAt else {
-            return "قراءة مؤقتة بلا وقت • تختفي إذا لم تتحدث"
+        guard let value = liveHeart,
+              value.bpm != nil,
+              let measuredAt = value.measuredAt
+        else {
+            return liveHeartMessage ?? "لا توجد قراءة نبض موثقة"
         }
 
         let age = effectiveHeartAgeSeconds(value)
         let time = formatHealthTime(measuredAt)
 
         if age <= 120 {
-            return "آخر قراءة • \(time) • قبل \(age)ث"
+            return "آخر قراءة موثقة • \(time) • قبل \(age)ث"
         }
 
         if age < 3600 {

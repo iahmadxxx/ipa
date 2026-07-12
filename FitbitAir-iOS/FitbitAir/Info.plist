@@ -16,6 +16,10 @@
 	<string>APPL</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
+	<key>NSCameraUsageDescription</key>
+	<string>يستخدم FitbitAir الكاميرا لمسح باركود المنتجات وتصوير الوجبات وصور تقدم الجسم.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>يستخدم FitbitAir مكتبة الصور لاختيار صور الطعام أو صور التقدم التي تختار تحليلها.</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UILaunchScreen</key>
@@ -35,6 +39,9 @@
 	<array>
 		<string>fetch</string>
 		<string>processing</string>
+		<string>location</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>يستخدم FitbitAir موقعك أثناء النشاطات الخارجية لحساب المسافة والسرعة والمسار.</string>
 </dict>
 </plist>
