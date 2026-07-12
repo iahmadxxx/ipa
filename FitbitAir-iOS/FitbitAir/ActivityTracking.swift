@@ -281,6 +281,7 @@ final class ActivityTracker: NSObject, ObservableObject, CLLocationManagerDelega
     @Published private(set) var phase: ActivityTrackerPhase = .idle
     @Published private(set) var activity: ActivityDefinition?
     @Published private(set) var elapsedSeconds = 0
+    @Published private(set) var activeSeconds = 0
     @Published private(set) var distanceMeters = 0.0
     @Published private(set) var currentSpeedMPS = 0.0
     @Published private(set) var elevationGainMeters = 0.0
@@ -310,12 +311,6 @@ final class ActivityTracker: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     var isActive: Bool { phase != .idle }
-    var activeSeconds: Int {
-        guard let startedAt else { return 0 }
-        let end = phase == .paused ? (pausedAt ?? Date()) : Date()
-        let currentPause = phase == .paused ? end.timeIntervalSince(pausedAt ?? end) : 0
-        return max(0, Int(end.timeIntervalSince(startedAt) - pausedSeconds - currentPause))
-    }
     var averageSpeedMPS: Double? {
         guard activeSeconds > 0, distanceMeters > 0 else { return nil }
         return distanceMeters / Double(activeSeconds)
@@ -336,6 +331,7 @@ final class ActivityTracker: NSObject, ObservableObject, CLLocationManagerDelega
         pausedAt = nil
         pausedSeconds = 0
         elapsedSeconds = 0
+        activeSeconds = 0
         distanceMeters = 0
         currentSpeedMPS = 0
         elevationGainMeters = 0
@@ -355,6 +351,7 @@ final class ActivityTracker: NSObject, ObservableObject, CLLocationManagerDelega
         pausedAt = Date()
         phase = .paused
         currentSpeedMPS = 0
+        updateElapsed()
         locationManager.stopUpdatingLocation()
         persist()
     }
@@ -365,6 +362,7 @@ final class ActivityTracker: NSObject, ObservableObject, CLLocationManagerDelega
         self.pausedAt = nil
         phase = .running
         lastLocation = nil
+        updateElapsed()
         beginLocationIfNeeded()
         persist()
     }
@@ -409,6 +407,7 @@ final class ActivityTracker: NSObject, ObservableObject, CLLocationManagerDelega
         pausedAt = nil
         pausedSeconds = 0
         elapsedSeconds = 0
+        activeSeconds = 0
         distanceMeters = 0
         currentSpeedMPS = 0
         elevationGainMeters = 0
@@ -432,23 +431,49 @@ final class ActivityTracker: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     private func updateElapsed() {
-        guard let startedAt else { elapsedSeconds = 0; return }
-        let now = phase == .paused ? (pausedAt ?? Date()) : Date()
+        guard let startedAt else {
+            elapsedSeconds = 0
+            activeSeconds = 0
+            return
+        }
+
+        let now = Date()
         elapsedSeconds = max(0, Int(now.timeIntervalSince(startedAt)))
-        objectWillChange.send()
+
+        // Keep the displayed timer as a real published value. This avoids a
+        // computed-Date timer getting stuck while other metrics continue to move.
+        let activeEnd = phase == .paused ? (pausedAt ?? now) : now
+        activeSeconds = max(0, Int(activeEnd.timeIntervalSince(startedAt) - pausedSeconds))
     }
 
     private func beginHeartPolling() {
         heartTask?.cancel()
         heartTask = Task { [weak self] in
             while !Task.isCancelled {
-                if let response = try? await APIClient.shared.liveHeart() {
-                    await MainActor.run {
-                        self?.bpm = response.bpm
-                        self?.bpmStale = response.stale
+                do {
+                    let response = try await APIClient.shared.liveHeart()
+                    if let value = response.bpm {
+                        await MainActor.run {
+                            self?.bpm = value
+                            self?.bpmStale = response.stale
+                        }
+                    } else if let dashboard = try? await APIClient.shared.dashboard(force: true),
+                              let fallback = dashboard.currentHR {
+                        // Keep the latest synchronized Fitbit value visible instead
+                        // of replacing it with an unavailable label.
+                        await MainActor.run {
+                            self?.bpm = fallback
+                            self?.bpmStale = true
+                        }
+                    } else {
+                        await MainActor.run { self?.bpmStale = true }
                     }
+                } catch {
+                    // Preserve the last valid BPM and only mark it as stale.
+                    await MainActor.run { self?.bpmStale = true }
                 }
-                try? await Task.sleep(for: .seconds(30))
+
+                try? await Task.sleep(for: .seconds(15))
             }
         }
     }

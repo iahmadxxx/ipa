@@ -386,6 +386,7 @@ struct ExerciseSessionView: View {
     @State private var saving = false
     @State private var errorMessage: String?
     @State private var restSeconds = 0
+    @State private var restEndsAt: Date?
     @State private var restTask: Task<Void, Never>?
     @State private var rpe = 7.0
     @State private var pain = 0.0
@@ -523,6 +524,7 @@ struct ExerciseSessionView: View {
                             startRestTimer(duration)
                         } onStop: {
                             restTask?.cancel()
+                            restEndsAt = nil
                             LocalNotificationManager.shared.cancelRest()
                             restSeconds = 0
                         }
@@ -653,12 +655,15 @@ struct ExerciseSessionView: View {
 
     private func startSessionTimerIfNeeded() {
         guard sessionStartedAt == nil else { return }
-        sessionStartedAt = Date()
+        let started = Date()
+        sessionStartedAt = started
         sessionSeconds = 0
+        sessionTask?.cancel()
         sessionTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                if !Task.isCancelled { await MainActor.run { sessionSeconds += 1 } }
+                let value = max(0, Int(Date().timeIntervalSince(started)))
+                await MainActor.run { sessionSeconds = value }
+                try? await Task.sleep(for: .milliseconds(500))
             }
         }
     }
@@ -693,21 +698,30 @@ struct ExerciseSessionView: View {
     }
 
     private func startRestTimer(_ duration: Int) {
+        let safeDuration = max(1, duration)
+        let deadline = Date().addingTimeInterval(TimeInterval(safeDuration))
+
         restTask?.cancel()
+        restEndsAt = deadline
         LocalNotificationManager.shared.cancelRest()
-        restSeconds = duration
+        restSeconds = safeDuration
+
         if UserDefaults.standard.object(forKey: "notifications.rest.enabled") == nil || UserDefaults.standard.bool(forKey: "notifications.rest.enabled") {
-            LocalNotificationManager.shared.scheduleRest(after: duration, exercise: exercise)
+            LocalNotificationManager.shared.scheduleRest(after: safeDuration, exercise: exercise)
         }
+
         restTask = Task {
-            while !Task.isCancelled && restSeconds > 0 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                if !Task.isCancelled { await MainActor.run { restSeconds = max(0, restSeconds - 1) } }
+            while !Task.isCancelled {
+                let remaining = max(0, Int(ceil(deadline.timeIntervalSinceNow)))
+                await MainActor.run { restSeconds = remaining }
+                if remaining == 0 { break }
+                try? await Task.sleep(for: .milliseconds(250))
             }
-            if !Task.isCancelled && restSeconds == 0 {
-                await MainActor.run {
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                }
+
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                restEndsAt = nil
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
         }
     }
