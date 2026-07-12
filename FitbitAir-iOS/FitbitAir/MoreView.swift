@@ -182,7 +182,13 @@ struct MoreView: View {
                     NavigationLink { NotificationSettingsView() } label: { MoreRow(icon: "bell.badge.fill", tint: FitTheme.warning, title: "الإشعارات المحلية", subtitle: "الراحة، التمرين، الماء، الكرياتين والنوم") }
                     NavigationLink { TokenCenterView() } label: { MoreRow(icon: "key.viewfinder", tint: FitTheme.accent, title: "إدارة وتجديد التوكنات", subtitle: "فحص Google وTelegram وGemini بضغطة واحدة") }
                     MoreRow(icon: "lock.shield.fill", tint: FitTheme.positive, title: "نسخة شخصية", subtitle: "مخصصة لأحمد المري فقط", showsChevron: false)
-                    MoreRow(icon: "app.badge.checkmark.fill", tint: FitTheme.accent, title: "الإصدار", subtitle: "FitbitAir 2.0", showsChevron: false)
+                    MoreRow(
+                        icon: "app.badge.checkmark.fill",
+                        tint: FitTheme.accent,
+                        title: "الإصدار",
+                        subtitle: "FitbitAir \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") • Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")",
+                        showsChevron: false
+                    )
                     MoreRow(icon: "server.rack", tint: FitTheme.accentBlue, title: "الخادم", subtitle: AppConfig.baseURL.host ?? "Railway", showsChevron: false)
                 }
             }
