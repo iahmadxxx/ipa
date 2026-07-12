@@ -625,6 +625,7 @@ struct ExerciseArtworkView: View {
     let exercise: ExerciseDefinition
     var compact = false
     var stage: Int = 0
+    var animated = false
 
     var body: some View {
         ZStack {
@@ -636,8 +637,18 @@ struct ExerciseArtworkView: View {
                         endPoint: .bottomTrailing
                     )
                 )
-            ExercisePoseCanvas(exercise: exercise, stage: stage)
-                .padding(compact ? 8 : 14)
+            Group {
+                if animated && !compact {
+                    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                        let seconds = timeline.date.timeIntervalSinceReferenceDate
+                        let wave = (sin(seconds * Double.pi / 1.35) + 1) / 2
+                        ExercisePoseCanvas(exercise: exercise, progress: CGFloat(wave))
+                    }
+                } else {
+                    ExercisePoseCanvas(exercise: exercise, progress: CGFloat(stage))
+                }
+            }
+            .padding(compact ? 8 : 14)
             VStack {
                 HStack {
                     Label(exercise.primaryMuscle.rawValue, systemImage: exercise.primaryMuscle.systemImage)
@@ -651,7 +662,7 @@ struct ExerciseArtworkView: View {
                 Spacer()
                 if !compact {
                     HStack {
-                        Text(stage == 0 ? "وضع البداية" : "نهاية الحركة")
+                        Text(animated ? "حركة تعليمية متحركة" : (stage == 0 ? "وضع البداية" : "نهاية الحركة"))
                             .font(.caption.bold())
                             .foregroundStyle(.white.opacity(0.75))
                         Spacer()
@@ -673,11 +684,13 @@ struct ExerciseArtworkView: View {
 
 private struct ExercisePoseCanvas: View {
     let exercise: ExerciseDefinition
-    let stage: Int
+    let progress: CGFloat
 
     var body: some View {
         Canvas { context, size in
-            let pose = PoseLibrary.pose(exercise.pose, stage: stage)
+            let startPose = PoseLibrary.pose(exercise.pose, stage: 0)
+            let endPose = PoseLibrary.pose(exercise.pose, stage: 1)
+            let pose = BodyPose.interpolated(from: startPose, to: endPose, progress: progress)
             let scale = min(size.width, size.height)
             func point(_ value: CGPoint) -> CGPoint {
                 CGPoint(x: value.x * size.width, y: value.y * size.height)
@@ -694,22 +707,43 @@ private struct ExercisePoseCanvas: View {
                 context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)), with: .color(color))
             }
 
-            drawEquipment(context: &context, size: size, pose: pose, kind: exercise.pose, stage: stage)
+            drawEquipment(context: &context, size: size, pose: pose, kind: exercise.pose, stage: progress >= 0.5 ? 1 : 0)
 
-            let bodyColor = Color.white.opacity(0.76)
-            line(pose.neck, pose.hip, color: bodyColor, width: 0.07)
-            line(pose.leftShoulder, pose.rightShoulder, color: bodyColor, width: 0.065)
-            line(pose.leftShoulder, pose.leftElbow, color: bodyColor)
-            line(pose.leftElbow, pose.leftHand, color: bodyColor)
-            line(pose.rightShoulder, pose.rightElbow, color: bodyColor)
-            line(pose.rightElbow, pose.rightHand, color: bodyColor)
-            line(pose.hip, pose.leftKnee, color: bodyColor, width: 0.065)
-            line(pose.leftKnee, pose.leftFoot, color: bodyColor, width: 0.06)
-            line(pose.hip, pose.rightKnee, color: bodyColor, width: 0.065)
-            line(pose.rightKnee, pose.rightFoot, color: bodyColor, width: 0.06)
-            circle(pose.head, radius: 0.07, color: Color.white.opacity(0.88))
-            circle(pose.neck, radius: 0.04, color: bodyColor)
-            circle(pose.hip, radius: 0.055, color: bodyColor)
+            // A layered silhouette is clearer than the previous thin stick figure.
+            let shadow = Color.black.opacity(0.42)
+            let bodyColor = Color.white.opacity(0.90)
+            for (a, b, width) in [
+                (pose.leftShoulder, pose.leftElbow, CGFloat(0.075)),
+                (pose.leftElbow, pose.leftHand, CGFloat(0.066)),
+                (pose.rightShoulder, pose.rightElbow, CGFloat(0.075)),
+                (pose.rightElbow, pose.rightHand, CGFloat(0.066)),
+                (pose.hip, pose.leftKnee, CGFloat(0.092)),
+                (pose.leftKnee, pose.leftFoot, CGFloat(0.078)),
+                (pose.hip, pose.rightKnee, CGFloat(0.092)),
+                (pose.rightKnee, pose.rightFoot, CGFloat(0.078))
+            ] {
+                line(a, b, color: shadow, width: width + 0.035)
+                line(a, b, color: bodyColor, width: width)
+            }
+
+            var torso = Path()
+            let ls = point(pose.leftShoulder), rs = point(pose.rightShoulder), hp = point(pose.hip)
+            let hipWidth = scale * 0.075
+            torso.move(to: ls)
+            torso.addLine(to: rs)
+            torso.addLine(to: CGPoint(x: hp.x + hipWidth, y: hp.y))
+            torso.addLine(to: CGPoint(x: hp.x - hipWidth, y: hp.y))
+            torso.closeSubpath()
+            context.fill(torso, with: .linearGradient(
+                Gradient(colors: [Color.white.opacity(0.92), Color.white.opacity(0.62)]),
+                startPoint: CGPoint(x: ls.x, y: ls.y),
+                endPoint: hp
+            ))
+            context.stroke(torso, with: .color(Color.black.opacity(0.25)), lineWidth: 2)
+
+            circle(pose.head, radius: 0.075, color: Color.white.opacity(0.96))
+            circle(pose.neck, radius: 0.036, color: bodyColor)
+            circle(pose.hip, radius: 0.065, color: bodyColor)
 
             let target = exercise.primaryMuscle.tint
             switch exercise.primaryMuscle {
@@ -812,6 +846,22 @@ private struct BodyPose {
     let rightKnee: CGPoint
     let leftFoot: CGPoint
     let rightFoot: CGPoint
+
+
+    static func interpolated(from a: BodyPose, to b: BodyPose, progress: CGFloat) -> BodyPose {
+        let t = max(0, min(1, progress))
+        func mix(_ p1: CGPoint, _ p2: CGPoint) -> CGPoint {
+            CGPoint(x: p1.x + (p2.x - p1.x) * t, y: p1.y + (p2.y - p1.y) * t)
+        }
+        return BodyPose(
+            head: mix(a.head, b.head), neck: mix(a.neck, b.neck),
+            leftShoulder: mix(a.leftShoulder, b.leftShoulder), rightShoulder: mix(a.rightShoulder, b.rightShoulder),
+            leftElbow: mix(a.leftElbow, b.leftElbow), rightElbow: mix(a.rightElbow, b.rightElbow),
+            leftHand: mix(a.leftHand, b.leftHand), rightHand: mix(a.rightHand, b.rightHand),
+            hip: mix(a.hip, b.hip), leftKnee: mix(a.leftKnee, b.leftKnee), rightKnee: mix(a.rightKnee, b.rightKnee),
+            leftFoot: mix(a.leftFoot, b.leftFoot), rightFoot: mix(a.rightFoot, b.rightFoot)
+        )
+    }
 }
 
 private enum PoseLibrary {

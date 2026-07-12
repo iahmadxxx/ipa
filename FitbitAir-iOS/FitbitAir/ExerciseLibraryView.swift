@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Workout hub
 
@@ -325,19 +326,47 @@ struct ExerciseDetailView: View {
     @State private var showAdd = false
     @State private var historyStats: ExerciseHistoryStats?
     @State private var historyLoading = false
+    @State private var motionPlaying = true
+    @State private var aboutExpanded = true
+    @State private var stepsExpanded = true
+    @State private var mistakesExpanded = false
+    @State private var tipsExpanded = false
+    @State private var statsExpanded = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
-                TabView(selection: $artworkStage) {
-                    ExerciseArtworkView(exercise: exercise, stage: 0)
-                        .tag(0)
-                    ExerciseArtworkView(exercise: exercise, stage: 1)
-                        .tag(1)
-                }
-                .tabViewStyle(.page(indexDisplayMode: .always))
+                ExerciseArtworkView(
+                    exercise: exercise,
+                    stage: artworkStage,
+                    animated: motionPlaying
+                )
                 .frame(height: 330)
                 .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+
+                HStack(spacing: 8) {
+                    Button {
+                        motionPlaying = true
+                    } label: {
+                        Label("تشغيل الحركة", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(motionPlaying ? FitTheme.accent : FitTheme.cardStrong)
+                    .foregroundStyle(motionPlaying ? .black : .white)
+
+                    Button("البداية") {
+                        motionPlaying = false
+                        artworkStage = 0
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("النهاية") {
+                        motionPlaying = false
+                        artworkStage = 1
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .font(.caption.bold())
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text(exercise.nameAR)
@@ -362,23 +391,25 @@ struct ExerciseDetailView: View {
                         }
                     }
                 } else if let historyStats {
-                    ExerciseStatsCard(stats: historyStats)
+                    CollapsibleDetailCard(title: "أداؤك السابق", icon: "chart.line.uptrend.xyaxis", tint: FitTheme.accent, isExpanded: $statsExpanded) {
+                        ExerciseStatsCard(stats: historyStats, embedded: true)
+                    }
                 }
 
-                DetailTextCard(title: "عن التمرين", icon: "info.circle.fill", tint: FitTheme.accent) {
+                CollapsibleDetailCard(title: "عن التمرين", icon: "info.circle.fill", tint: FitTheme.accent, isExpanded: $aboutExpanded) {
                     Text(exercise.overview)
                         .foregroundStyle(.white.opacity(0.78))
                 }
 
-                DetailTextCard(title: "طريقة التنفيذ", icon: "list.number", tint: FitTheme.positive) {
+                CollapsibleDetailCard(title: "طريقة التنفيذ", icon: "list.number", tint: FitTheme.positive, isExpanded: $stepsExpanded) {
                     NumberedStepsView(items: exercise.steps)
                 }
 
-                DetailTextCard(title: "الأخطاء الشائعة", icon: "exclamationmark.triangle.fill", tint: FitTheme.danger) {
+                CollapsibleDetailCard(title: "الأخطاء الشائعة", icon: "exclamationmark.triangle.fill", tint: FitTheme.danger, isExpanded: $mistakesExpanded) {
                     BulletListView(items: exercise.mistakes, tint: FitTheme.danger)
                 }
 
-                DetailTextCard(title: "نصائح مهمة", icon: "lightbulb.fill", tint: FitTheme.warning) {
+                CollapsibleDetailCard(title: "نصائح مهمة", icon: "lightbulb.fill", tint: FitTheme.warning, isExpanded: $tipsExpanded) {
                     BulletListView(items: exercise.tips, tint: FitTheme.warning)
                 }
 
@@ -455,6 +486,47 @@ private struct DetailTextCard<Content: View>: View {
     }
 }
 
+private struct CollapsibleDetailCard<Content: View>: View {
+    let title: String
+    let icon: String
+    let tint: Color
+    @Binding var isExpanded: Bool
+    @ViewBuilder let content: Content
+
+    init(title: String, icon: String, tint: Color, isExpanded: Binding<Bool>, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.icon = icon
+        self.tint = tint
+        self._isExpanded = isExpanded
+        self.content = content()
+    }
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                } label: {
+                    HStack {
+                        Label(title, systemImage: icon)
+                            .font(.headline)
+                            .foregroundStyle(tint)
+                        Spacer()
+                        Image(systemName: isExpanded ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                            .foregroundStyle(tint)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                if isExpanded {
+                    content
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+        }
+    }
+}
+
 private struct NumberedStepsView: View {
     let items: [String]
 
@@ -499,9 +571,19 @@ private struct BulletListView: View {
 
 private struct ExerciseStatsCard: View {
     let stats: ExerciseHistoryStats
+    var embedded = false
 
     var body: some View {
-        Card {
+        Group {
+            if embedded {
+                statsContent
+            } else {
+                Card { statsContent }
+            }
+        }
+    }
+
+    private var statsContent: some View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Label("أداؤك", systemImage: "chart.line.uptrend.xyaxis")
@@ -521,7 +603,6 @@ private struct ExerciseStatsCard: View {
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.68))
             }
-        }
     }
 }
 
@@ -651,6 +732,7 @@ struct AddExerciseToPlanView: View {
                     }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("إضافة إلى الجدول")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -661,6 +743,10 @@ struct AddExerciseToPlanView: View {
                         Task { await save() }
                     }
                     .disabled(days.isEmpty || selectedDayKey.isEmpty || saving)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("تم") { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
                 }
             }
         }
@@ -730,6 +816,7 @@ struct CustomExerciseFormView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("تمرين مخصص")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -738,6 +825,10 @@ struct CustomExerciseFormView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("حفظ") { save() }
                         .disabled(nameAR.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("تم") { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
                 }
             }
         }

@@ -15,7 +15,7 @@ struct ActivityDefinition: Identifiable, Codable, Hashable {
     var id: String { officialType }
 }
 
-enum ActivityCategory: String, CaseIterable, Codable, Identifiable {
+enum ActivityCategory: String, CaseIterable, Codable, Identifiable, Hashable {
     case all, popular, cardio, strength, sports, outdoors, water, mindBody, winter, daily, other
     var id: String { rawValue }
     var title: String {
@@ -528,6 +528,13 @@ final class ActivityTracker: NSObject, ObservableObject, CLLocationManagerDelega
 
 // MARK: - Activity hub UI
 
+private enum ActivityHubPage: String, CaseIterable, Identifiable {
+    case start = "بدء نشاط"
+    case history = "سجل النشاطات"
+    var id: String { rawValue }
+    var icon: String { self == .start ? "play.circle.fill" : "clock.arrow.circlepath" }
+}
+
 struct ActivityHubView: View {
     @StateObject private var tracker = ActivityTracker.shared
     @State private var sessions: [ActivitySessionRecord] = []
@@ -540,43 +547,80 @@ struct ActivityHubView: View {
     @State private var errorMessage: String?
     @State private var notice: String?
     @State private var reauthURL: URL?
+    @State private var page: ActivityHubPage = .start
+    @State private var expandedCategories: Set<ActivityCategory> = [.popular, .cardio, .outdoors]
+
+    private var searchNeedle: String {
+        search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
 
     private var filtered: [ActivityDefinition] {
-        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ActivityCatalog.all.filter { item in
-            let categoryMatches = selectedCategory == .all || selectedCategory == .popular && ActivityCatalog.popular.contains(item) || item.category == selectedCategory
-            let searchMatches = needle.isEmpty || item.nameAR.lowercased().contains(needle) || item.nameEN.lowercased().contains(needle) || item.officialType.lowercased().contains(needle)
+        ActivityCatalog.all.filter { item in
+            let categoryMatches: Bool
+            switch selectedCategory {
+            case .all:
+                categoryMatches = true
+            case .popular:
+                categoryMatches = ActivityCatalog.popular.contains(item)
+            default:
+                categoryMatches = item.category == selectedCategory
+            }
+            let searchMatches = searchNeedle.isEmpty || item.nameAR.lowercased().contains(searchNeedle) || item.nameEN.lowercased().contains(searchNeedle) || item.officialType.lowercased().contains(searchNeedle)
             return categoryMatches && searchMatches
         }
+    }
+
+    private var activityGroups: [(ActivityCategory, [ActivityDefinition])] {
+        if selectedCategory == .popular { return [(.popular, filtered)] }
+        if selectedCategory != .all { return [(selectedCategory, filtered)] }
+        return ActivityCategory.allCases
+            .filter { $0 != .all && $0 != .popular }
+            .compactMap { category in
+                let rows = filtered.filter { $0.category == category }
+                return rows.isEmpty ? nil : (category, rows)
+            }
     }
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
                 activityHeader
+                activityPagePicker
                 if tracker.isActive { activeBanner }
-                summaryCards
-                searchField
-                categoryPicker
 
-                HStack {
-                    Text("النشاطات").font(.title3.bold())
-                    Spacer()
-                    Text("\(filtered.count) نشاط").font(.caption).foregroundStyle(.white.opacity(0.5))
-                }.padding(.horizontal)
+                if page == .start {
+                    searchField
+                    categoryPicker
 
-                ForEach(filtered) { activity in
-                    Button { selectedActivity = activity } label: {
-                        ActivityCatalogRow(activity: activity)
+                    HStack {
+                        Text("اختر النشاط").font(.title3.bold())
+                        Spacer()
+                        Text("\(filtered.count) نشاط • أقسام قابلة للطي").font(.caption).foregroundStyle(.white.opacity(0.5))
+                    }.padding(.horizontal)
+
+                    ForEach(activityGroups, id: \.0) { group in
+                        ActivityCategoryDisclosure(
+                            category: group.0,
+                            activities: group.1,
+                            isExpanded: Binding(
+                                get: { !searchNeedle.isEmpty || activityGroups.count == 1 || expandedCategories.contains(group.0) },
+                                set: { expanded in
+                                    if expanded { expandedCategories.insert(group.0) }
+                                    else { expandedCategories.remove(group.0) }
+                                }
+                            ),
+                            onSelect: { selectedActivity = $0 }
+                        )
+                        .padding(.horizontal)
                     }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal)
+                } else {
+                    summaryCards
+                    recentSessions
                 }
-
-                recentSessions
             }
             .padding(.vertical, 4)
         }
+        .scrollDismissesKeyboard(.interactively)
         .refreshable { await sync() }
         .task { await load() }
         .sheet(item: $selectedActivity) { activity in
@@ -589,9 +633,11 @@ struct ActivityHubView: View {
             ActivityLiveView(tracker: tracker, onSaved: { response in
                 notice = response.message
                 if response.needsReauth, let value = response.reauthURL { reauthURL = URL(string: value) }
+                page = .history
                 Task { await load() }
             }, onQueued: { message in
                 notice = message
+                page = .history
                 Task { await load() }
             })
         }
@@ -607,7 +653,7 @@ struct ActivityHubView: View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("النشاطات").font(.largeTitle.bold())
-                Text("ابدأ الركض أو المشي أو أي رياضة، ثم ادمج بيانات Fitbit بعد المزامنة")
+                Text(page == .start ? "اختر النشاط وابدأ التتبع" : "كل نشاطاتك المحفوظة في مكان مستقل")
                     .font(.caption).foregroundStyle(.white.opacity(0.52))
             }
             Spacer()
@@ -617,6 +663,28 @@ struct ActivityHubView: View {
                     .background(FitTheme.cardStrong, in: Circle())
             }.disabled(syncing)
         }.padding(.horizontal)
+    }
+
+    private var activityPagePicker: some View {
+        HStack(spacing: 8) {
+            ForEach(ActivityHubPage.allCases) { item in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { page = item }
+                } label: {
+                    Label(item.rawValue, systemImage: item.icon)
+                        .font(.subheadline.bold())
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .foregroundStyle(page == item ? Color.black : Color.white.opacity(0.65))
+                        .background(page == item ? FitTheme.accent : FitTheme.cardStrong, in: RoundedRectangle(cornerRadius: 15))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(5)
+        .background(FitTheme.card, in: RoundedRectangle(cornerRadius: 19))
+        .overlay(RoundedRectangle(cornerRadius: 19).stroke(FitTheme.stroke))
+        .padding(.horizontal)
     }
 
     private var activeBanner: some View {
@@ -678,7 +746,7 @@ struct ActivityHubView: View {
     private var recentSessions: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("السجل الأخير").font(.title3.bold())
+                Text("سجل النشاطات").font(.title3.bold())
                 Spacer()
                 if loading { ProgressView().tint(FitTheme.accent) }
             }.padding(.horizontal)
@@ -735,24 +803,104 @@ struct ActivityHubView: View {
     private static func clock(_ seconds: Int) -> String { String(format: "%02d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60) }
 }
 
+private struct ActivityCategoryDisclosure: View {
+    let category: ActivityCategory
+    let activities: [ActivityDefinition]
+    @Binding var isExpanded: Bool
+    let onSelect: (ActivityDefinition) -> Void
+
+    var body: some View {
+        GlassCard(padding: 0) {
+            VStack(spacing: 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: categoryIcon)
+                            .font(.headline)
+                            .foregroundStyle(FitTheme.accent)
+                            .frame(width: 38, height: 38)
+                            .background(FitTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(category.title).font(.headline).foregroundStyle(.white)
+                            Text("\(activities.count) نشاط").font(.caption2).foregroundStyle(.white.opacity(0.48))
+                        }
+                        Spacer()
+                        Image(systemName: isExpanded ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(FitTheme.accent)
+                    }
+                    .padding(14)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if isExpanded {
+                    Divider().overlay(Color.white.opacity(0.08))
+                    LazyVStack(spacing: 0) {
+                        ForEach(activities) { activity in
+                            Button { onSelect(activity) } label: {
+                                ActivityCatalogRow(activity: activity, compact: true)
+                            }
+                            .buttonStyle(.plain)
+                            if activity.id != activities.last?.id {
+                                Divider().overlay(Color.white.opacity(0.07)).padding(.leading, 82)
+                            }
+                        }
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+        }
+    }
+
+    private var categoryIcon: String {
+        switch category {
+        case .popular: return "star.fill"
+        case .cardio: return "heart.circle.fill"
+        case .strength: return "dumbbell.fill"
+        case .sports: return "sportscourt.fill"
+        case .outdoors: return "mountain.2.fill"
+        case .water: return "drop.fill"
+        case .mindBody: return "figure.mind.and.body"
+        case .winter: return "snowflake"
+        case .daily: return "house.fill"
+        case .other, .all: return "square.grid.2x2.fill"
+        }
+    }
+}
+
 private struct ActivityCatalogRow: View {
     let activity: ActivityDefinition
+    var compact = false
+
     var body: some View {
-        Card {
-            HStack(spacing: 14) {
-                Image(systemName: activity.icon).font(.system(size: 25, weight: .semibold)).foregroundStyle(FitTheme.accent)
-                    .frame(width: 58, height: 58).background(FitTheme.accent.opacity(0.11), in: RoundedRectangle(cornerRadius: 17))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(activity.nameAR).font(.headline)
-                    Text(activity.nameEN).font(.caption).foregroundStyle(.white.opacity(0.45))
-                    HStack(spacing: 6) {
-                        Text(activity.category.title)
-                        if activity.tracksGPS { Label("GPS", systemImage: "location.fill") }
-                    }.font(.caption2).foregroundStyle(FitTheme.accent)
-                }
-                Spacer()
-                Image(systemName: "play.fill").foregroundStyle(.black).frame(width: 42, height: 42).background(FitTheme.accent, in: Circle())
+        Group {
+            if compact { row.padding(.horizontal, 14).padding(.vertical, 10) }
+            else { Card { row } }
+        }
+    }
+
+    private var row: some View {
+        HStack(spacing: 14) {
+            Image(systemName: activity.icon)
+                .font(.system(size: compact ? 21 : 25, weight: .semibold))
+                .foregroundStyle(FitTheme.accent)
+                .frame(width: compact ? 48 : 58, height: compact ? 48 : 58)
+                .background(FitTheme.accent.opacity(0.11), in: RoundedRectangle(cornerRadius: compact ? 14 : 17))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(activity.nameAR).font(.headline)
+                Text(activity.nameEN).font(.caption).foregroundStyle(.white.opacity(0.45))
+                HStack(spacing: 6) {
+                    Text(activity.category.title)
+                    if activity.tracksGPS { Label("GPS", systemImage: "location.fill") }
+                }.font(.caption2).foregroundStyle(FitTheme.accent)
             }
+            Spacer()
+            Image(systemName: "play.fill")
+                .foregroundStyle(.black)
+                .frame(width: 40, height: 40)
+                .background(FitTheme.accent, in: Circle())
         }
     }
 }
@@ -929,11 +1077,28 @@ private struct ActivityLiveView: View {
                             Task { await finishAndSave() }
                         } label: {
                             HStack { Spacer(); if saving { ProgressView() } else { Text("حفظ وإنهاء النشاط").bold() }; Spacer() }
-                        }.disabled(saving)
+                        }
+                        .disabled(saving)
+
+                        Button("إنهاء بدون حفظ", role: .destructive) {
+                            tracker.discard()
+                            showFinish = false
+                            dismiss()
+                        }
+                        .disabled(saving)
+                    } footer: {
+                        Text("إنهاء بدون حفظ يلغي الوقت والمسافة نهائيًا.")
                     }
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .navigationTitle("إنهاء النشاط")
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("رجوع") { showFinish = false } } }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("رجوع") { showFinish = false } }
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("تم") { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+                    }
+                }
             }.presentationDetents([.medium])
         }
         .confirmationDialog("إلغاء النشاط؟", isPresented: $showDiscard, titleVisibility: .visible) {

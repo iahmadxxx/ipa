@@ -181,7 +181,7 @@ struct MoreView: View {
                 VStack(spacing: 2) {
                     NavigationLink { NotificationSettingsView() } label: { MoreRow(icon: "bell.badge.fill", tint: FitTheme.warning, title: "الإشعارات المحلية", subtitle: "الراحة، التمرين، الماء، الكرياتين والنوم") }
                     NavigationLink { TokenCenterView() } label: { MoreRow(icon: "key.viewfinder", tint: FitTheme.accent, title: "إدارة وتجديد التوكنات", subtitle: "فحص Google وTelegram وGemini بضغطة واحدة") }
-                    MoreRow(icon: "lock.shield.fill", tint: FitTheme.positive, title: "نسخة شخصية", subtitle: "مخصصة لأحمد المري فقط", showsChevron: false)
+                    MoreRow(icon: "lock.shield.fill", tint: FitTheme.positive, title: "نسخة شخصية", subtitle: "FitBit Air By Ahmad Almarri", showsChevron: false)
                     MoreRow(
                         icon: "app.badge.checkmark.fill",
                         tint: FitTheme.accent,

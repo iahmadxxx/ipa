@@ -44,6 +44,10 @@ private struct NutritionDashboardView: View {
     @State private var showSavedFoods = false
     @State private var copyingYesterday = false
     @State private var statusMessage: String?
+    @State private var showAddMeal = false
+    @State private var newMealName = ""
+    @State private var actionsExpanded = true
+    @State private var mealsExpanded = true
 
     var body: some View {
         ScrollView {
@@ -133,6 +137,18 @@ private struct NutritionDashboardView: View {
         } message: {
             Text(statusMessage ?? "")
         }
+        .alert("إضافة وجبة جديدة", isPresented: $showAddMeal) {
+            TextField("مثال: قبل التمرين", text: $newMealName)
+            Button("إضافة") {
+                let clean = newMealName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !clean.isEmpty else { return }
+                _ = MealSlotStore.add(label: clean)
+                newMealName = ""
+            }
+            Button("إلغاء", role: .cancel) { newMealName = "" }
+        } message: {
+            Text("تقدر تضيف أي عدد من الوجبات، وتظهر كقسم مستقل في سجل اليوم.")
+        }
     }
 
     private var header: some View {
@@ -192,8 +208,12 @@ private struct NutritionDashboardView: View {
     }
 
     private var actionGrid: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "إضافة الطعام", subtitle: "كل نتيجة تظهر لك قبل الحفظ")
+        CollapsibleWellnessCard(
+            title: "إضافة الطعام",
+            subtitle: "كل نتيجة تظهر لك قبل الحفظ",
+            icon: "plus.circle.fill",
+            isExpanded: $actionsExpanded
+        ) {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 foodAction(icon: "barcode.viewfinder", title: "مسح باركود", subtitle: "للمنتجات المغلفة", tint: FitTheme.accent) {
                     showScanner = true
@@ -234,8 +254,24 @@ private struct NutritionDashboardView: View {
     }
 
     private var entriesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "وجبات اليوم", subtitle: "\(data?.entries.count ?? 0) عنصر")
+        CollapsibleWellnessCard(
+            title: "وجبات اليوم",
+            subtitle: "\(data?.entries.count ?? 0) عنصر • بدون حد لعدد الوجبات",
+            icon: "fork.knife.circle.fill",
+            isExpanded: $mealsExpanded,
+            trailing: {
+                Button {
+                    showAddMeal = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.subheadline.bold())
+                        .frame(width: 34, height: 34)
+                        .background(FitTheme.accent.opacity(0.14), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(FitTheme.accent)
+            }
+        ) {
             if data?.entries.isEmpty != false {
                 GlassCard {
                     VStack(spacing: 10) {
@@ -296,19 +332,18 @@ private struct NutritionDashboardView: View {
 
     private var mealGroups: [(String, [NutritionEntry])] {
         let entries = data?.entries ?? []
-        return ["breakfast", "lunch", "dinner", "snack"].compactMap { type in
+        var orderedKeys = MealSlotStore.all().map(\.key)
+        for key in entries.map(\.mealType) where !orderedKeys.contains(key) {
+            orderedKeys.append(key)
+        }
+        return orderedKeys.compactMap { type in
             let rows = entries.filter { $0.mealType == type }
             return rows.isEmpty ? nil : (type, rows)
         }
     }
 
     private func mealTitle(_ key: String) -> String {
-        switch key {
-        case "breakfast": return "الفطور"
-        case "lunch": return "الغداء"
-        case "dinner": return "العشاء"
-        default: return "السناك"
-        }
+        MealSlotStore.label(for: key)
     }
 
     @MainActor
@@ -426,6 +461,116 @@ private struct NutritionDashboardView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+}
+
+private struct CollapsibleWellnessCard<Content: View, Trailing: View>: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    @Binding var isExpanded: Bool
+    let trailing: Trailing
+    let content: Content
+
+    init(
+        title: String,
+        subtitle: String,
+        icon: String,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder content: () -> Content
+    ) where Trailing == EmptyView {
+        self.title = title
+        self.subtitle = subtitle
+        self.icon = icon
+        self._isExpanded = isExpanded
+        self.trailing = EmptyView()
+        self.content = content()
+    }
+
+    init(
+        title: String,
+        subtitle: String,
+        icon: String,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder trailing: () -> Trailing,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.icon = icon
+        self._isExpanded = isExpanded
+        self.trailing = trailing()
+        self.content = content()
+    }
+
+    var body: some View {
+        GlassCard(padding: 14) {
+            VStack(spacing: 12) {
+                HStack(spacing: 11) {
+                    Image(systemName: icon)
+                        .foregroundStyle(FitTheme.accent)
+                        .frame(width: 34, height: 34)
+                        .background(FitTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(.headline)
+                        Text(subtitle).font(.caption2).foregroundStyle(.white.opacity(0.48))
+                    }
+                    Spacer()
+                    trailing
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                    } label: {
+                        Image(systemName: isExpanded ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(FitTheme.accent)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if isExpanded {
+                    content
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+        }
+    }
+}
+
+private struct MealSlot: Codable, Identifiable, Hashable {
+    let key: String
+    let label: String
+    var id: String { key }
+}
+
+private enum MealSlotStore {
+    private static let storageKey = "fitbitair.nutrition.meal-slots.v1"
+    private static let builtIns = [
+        MealSlot(key: "breakfast", label: "الفطور"),
+        MealSlot(key: "lunch", label: "الغداء"),
+        MealSlot(key: "dinner", label: "العشاء"),
+        MealSlot(key: "snack", label: "السناك")
+    ]
+
+    static func all() -> [MealSlot] {
+        guard let data = UserDefaults.standard.data(forKey: storageKey),
+              let custom = try? JSONDecoder().decode([MealSlot].self, from: data) else {
+            return builtIns
+        }
+        return builtIns + custom.filter { slot in !builtIns.contains(where: { $0.key == slot.key }) }
+    }
+
+    @discardableResult
+    static func add(label: String) -> MealSlot {
+        let clean = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let slot = MealSlot(key: "custom_\(UUID().uuidString.lowercased())", label: clean)
+        let custom = all().filter { item in !builtIns.contains(where: { $0.key == item.key }) } + [slot]
+        if let data = try? JSONEncoder().encode(custom) {
+            UserDefaults.standard.set(data, forKey: storageKey)
+        }
+        return slot
+    }
+
+    static func label(for key: String) -> String {
+        all().first(where: { $0.key == key })?.label ?? key
     }
 }
 
@@ -563,10 +708,27 @@ private struct FoodDraft: Identifiable {
     }
 }
 
+private enum MacroInputMode: String, CaseIterable, Identifiable {
+    case serving = "الحصة التي أكلتها"
+    case per100 = "لكل 100 غ"
+    var id: String { rawValue }
+}
+
 private struct FoodEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State var draft: FoodDraft
+    @State private var inputMode: MacroInputMode
+    @State private var mealSlots: [MealSlot]
+    @State private var showAddMeal = false
+    @State private var newMealName = ""
     let onSave: (FoodDraft) -> Void
+
+    init(draft: FoodDraft, onSave: @escaping (FoodDraft) -> Void) {
+        _draft = State(initialValue: draft)
+        _inputMode = State(initialValue: draft.caloriesPer100 == nil ? .serving : .per100)
+        _mealSlots = State(initialValue: MealSlotStore.all())
+        self.onSave = onSave
+    }
 
     var body: some View {
         NavigationStack {
@@ -576,28 +738,64 @@ private struct FoodEditorView: View {
                     Section("المنتج أو الوجبة") {
                         TextField("الاسم", text: $draft.name)
                         Picker("الوجبة", selection: $draft.mealType) {
-                            Text("الفطور").tag("breakfast")
-                            Text("الغداء").tag("lunch")
-                            Text("العشاء").tag("dinner")
-                            Text("سناك").tag("snack")
+                            ForEach(mealSlots) { slot in
+                                Text(slot.label).tag(slot.key)
+                            }
+                        }
+                        Button {
+                            showAddMeal = true
+                        } label: {
+                            Label("إضافة وجبة جديدة", systemImage: "plus.circle.fill")
                         }
                         TextField("وصف الحصة", text: $draft.servingDescription)
                         HStack {
-                            Text("الكمية")
+                            Text("الكمية الفعلية")
                             Spacer()
                             TextField("100", value: $draft.quantityGrams, format: .number.precision(.fractionLength(0...1)))
                                 .keyboardType(.decimalPad)
                                 .multilineTextAlignment(.trailing)
-                                .frame(width: 100)
+                                .frame(width: 110)
                             Text("غ").foregroundStyle(.secondary)
                         }
                     }
-                    Section("القيم للحصة التي أكلتها") {
-                        macroField("السعرات", value: $draft.calories, unit: "kcal")
-                        macroField("البروتين", value: $draft.protein, unit: "g")
-                        macroField("الكارب", value: $draft.carbs, unit: "g")
-                        macroField("الدهون", value: $draft.fat, unit: "g")
+
+                    Section("طريقة إدخال القيم") {
+                        Picker("الحساب", selection: $inputMode) {
+                            ForEach(MacroInputMode.allCases) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+
+                        Text(inputMode == .serving
+                             ? "اكتب البروتين والكارب والدهون والسعرات للحصة التي أكلتها بالضبط."
+                             : "اكتب القيم المكتوبة على العبوة لكل 100 غ، والتطبيق يحسب الكمية تلقائيًا.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
+
+                    if inputMode == .serving {
+                        Section("القيم للحصة التي أكلتها") {
+                            macroField("السعرات", value: $draft.calories, unit: "kcal")
+                            macroField("البروتين", value: $draft.protein, unit: "g")
+                            macroField("الكارب", value: $draft.carbs, unit: "g")
+                            macroField("الدهون", value: $draft.fat, unit: "g")
+                        }
+                    } else {
+                        Section("القيم لكل 100 غ") {
+                            macroField("السعرات", value: per100Binding(\.caloriesPer100), unit: "kcal")
+                            macroField("البروتين", value: per100Binding(\.proteinPer100), unit: "g")
+                            macroField("الكارب", value: per100Binding(\.carbsPer100), unit: "g")
+                            macroField("الدهون", value: per100Binding(\.fatPer100), unit: "g")
+                        }
+                        Section("الناتج للكمية التي أكلتها") {
+                            calculatedRow("السعرات", draft.calories, "kcal")
+                            calculatedRow("البروتين", draft.protein, "g")
+                            calculatedRow("الكارب", draft.carbs, "g")
+                            calculatedRow("الدهون", draft.fat, "g")
+                        }
+                    }
+
                     if !draft.notes.isEmpty {
                         Section("مراجعة") {
                             Text(draft.notes)
@@ -607,8 +805,12 @@ private struct FoodEditorView: View {
                     }
                 }
                 .scrollContentBackground(.hidden)
+                .scrollDismissesKeyboard(.interactively)
                 .onChange(of: draft.quantityGrams) { _, _ in
-                    draft.recalculateForQuantity()
+                    if inputMode == .per100 { draft.recalculateForQuantity() }
+                }
+                .onChange(of: inputMode) { _, value in
+                    if value == .per100 { seedPer100Values() }
                 }
             }
             .navigationTitle("مراجعة قبل الحفظ")
@@ -619,8 +821,44 @@ private struct FoodEditorView: View {
                     Button("حفظ") { onSave(draft) }
                         .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("تم") { dismissKeyboard() }
+                }
+            }
+            .alert("إضافة وجبة جديدة", isPresented: $showAddMeal) {
+                TextField("مثال: بعد التمرين", text: $newMealName)
+                Button("إضافة") {
+                    let clean = newMealName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !clean.isEmpty else { return }
+                    let slot = MealSlotStore.add(label: clean)
+                    mealSlots = MealSlotStore.all()
+                    draft.mealType = slot.key
+                    newMealName = ""
+                }
+                Button("إلغاء", role: .cancel) { newMealName = "" }
             }
         }
+    }
+
+    private func seedPer100Values() {
+        let grams = max(1, draft.quantityGrams)
+        let factor = 100 / grams
+        if draft.caloriesPer100 == nil { draft.caloriesPer100 = draft.calories * factor }
+        if draft.proteinPer100 == nil { draft.proteinPer100 = draft.protein * factor }
+        if draft.carbsPer100 == nil { draft.carbsPer100 = draft.carbs * factor }
+        if draft.fatPer100 == nil { draft.fatPer100 = draft.fat * factor }
+        draft.recalculateForQuantity()
+    }
+
+    private func per100Binding(_ keyPath: WritableKeyPath<FoodDraft, Double?>) -> Binding<Double> {
+        Binding(
+            get: { draft[keyPath: keyPath] ?? 0 },
+            set: { value in
+                draft[keyPath: keyPath] = max(0, value)
+                draft.recalculateForQuantity()
+            }
+        )
     }
 
     private func macroField(_ title: String, value: Binding<Double>, unit: String) -> some View {
@@ -630,9 +868,23 @@ private struct FoodEditorView: View {
             TextField("0", value: value, format: .number.precision(.fractionLength(0...1)))
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
-                .frame(width: 100)
+                .frame(width: 110)
             Text(unit).foregroundStyle(.secondary)
         }
+    }
+
+    private func calculatedRow(_ title: String, _ value: Double, _ unit: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text("\(value.clean) \(unit)")
+                .font(.body.monospacedDigit().weight(.semibold))
+                .foregroundStyle(FitTheme.accent)
+        }
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 }
 

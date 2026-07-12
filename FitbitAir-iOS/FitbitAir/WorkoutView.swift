@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct WorkoutView: View {
     @State private var days: [WorkoutDay] = []
@@ -268,6 +269,11 @@ struct ExerciseSessionView: View {
     @State private var sessionStartedAt: Date?
     @State private var sessionSeconds = 0
     @State private var sessionTask: Task<Void, Never>?
+    @State private var recommendationExpanded = true
+    @State private var feedbackExpanded = false
+    @State private var restExpanded = true
+    @State private var todaySetsExpanded = true
+    @State private var lastSessionExpanded = false
 
     private var definition: ExerciseDefinition { ExerciseCatalog.resolved(exercise) }
     private var prescription: ExercisePrescription {
@@ -336,11 +342,8 @@ struct ExerciseSessionView: View {
                 if let context {
                     if let recommendation = context.recommendation?.text,
                        !recommendation.isEmpty {
-                        Card {
-                            Label("الاقتراح القادم", systemImage: "brain.head.profile")
-                                .font(.headline)
+                        WorkoutDisclosureCard(title: "الاقتراح القادم", icon: "brain.head.profile", tint: FitTheme.accent, isExpanded: $recommendationExpanded) {
                             Text(recommendation)
-                                .padding(.top, 4)
                                 .foregroundStyle(.white.opacity(0.8))
                         }
                     }
@@ -350,7 +353,7 @@ struct ExerciseSessionView: View {
                         NumberEntryCard(title: "العدات", suffix: "عدة", text: $reps, keyboard: .numberPad)
                     }
 
-                    Card {
+                    WorkoutDisclosureCard(title: "تقييم الجولة وملاحظاتك", icon: "slider.horizontal.3", tint: FitTheme.accentBlue, isExpanded: $feedbackExpanded) {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 Text("صعوبة الجولة RPE").font(.subheadline.weight(.semibold))
@@ -389,20 +392,26 @@ struct ExerciseSessionView: View {
                     .buttonStyle(PrimaryButtonStyle())
                     .disabled(saving)
 
-                    RestTimerCard(seconds: restSeconds) { duration in
-                        startRestTimer(duration)
-                    } onStop: {
-                        restTask?.cancel()
-                        LocalNotificationManager.shared.cancelRest()
-                        restSeconds = 0
+                    WorkoutDisclosureCard(title: "مؤقت الراحة", icon: "timer", tint: FitTheme.warning, isExpanded: $restExpanded) {
+                        RestTimerCard(seconds: restSeconds) { duration in
+                            startRestTimer(duration)
+                        } onStop: {
+                            restTask?.cancel()
+                            LocalNotificationManager.shared.cancelRest()
+                            restSeconds = 0
+                        }
                     }
 
-                    TodaySetsCard(sets: context.todaySets) { set in
-                        editingSet = set
+                    WorkoutDisclosureCard(title: "جولات اليوم", icon: "checklist", tint: FitTheme.positive, isExpanded: $todaySetsExpanded) {
+                        TodaySetsCard(sets: context.todaySets) { set in
+                            editingSet = set
+                        }
                     }
 
                     if let lastSession = context.lastSession {
-                        LastSessionCard(session: lastSession)
+                        WorkoutDisclosureCard(title: "آخر جلسة", icon: "clock.arrow.circlepath", tint: FitTheme.accentPurple, isExpanded: $lastSessionExpanded) {
+                            LastSessionCard(session: lastSession)
+                        }
                     }
                 } else if errorMessage == nil {
                     ProgressView()
@@ -419,7 +428,15 @@ struct ExerciseSessionView: View {
         .navigationTitle("تسجيل تمرين")
         .background(AppBackground())
         .navigationBarTitleDisplayMode(.inline)
-                .task {
+        .scrollDismissesKeyboard(.interactively)
+        .onTapGesture { dismissWorkoutKeyboard() }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("تم") { dismissWorkoutKeyboard() }
+            }
+        }
+        .task {
             startSessionTimerIfNeeded()
             await load()
         }
@@ -444,6 +461,10 @@ struct ExerciseSessionView: View {
                 }
             }
         }
+    }
+
+    private func dismissWorkoutKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     private func load() async {
@@ -560,6 +581,43 @@ struct ExerciseSessionView: View {
             if !Task.isCancelled && restSeconds == 0 {
                 await MainActor.run {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+            }
+        }
+    }
+}
+
+private struct WorkoutDisclosureCard<Content: View>: View {
+    let title: String
+    let icon: String
+    let tint: Color
+    @Binding var isExpanded: Bool
+    @ViewBuilder let content: Content
+
+    init(title: String, icon: String, tint: Color, isExpanded: Binding<Bool>, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.icon = icon
+        self.tint = tint
+        self._isExpanded = isExpanded
+        self.content = content()
+    }
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                } label: {
+                    HStack {
+                        Label(title, systemImage: icon).font(.headline).foregroundStyle(tint)
+                        Spacer()
+                        Image(systemName: isExpanded ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                            .foregroundStyle(tint)
+                    }
+                }
+                .buttonStyle(.plain)
+                if isExpanded {
+                    content.transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
         }
@@ -974,6 +1032,7 @@ private struct ManagerTextEditor: View {
                         .foregroundStyle(.red)
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle(action.title)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -985,6 +1044,10 @@ private struct ManagerTextEditor: View {
                         Task { await save() }
                     }
                     .disabled(value.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 || saving)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("تم") { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
                 }
             }
         }
@@ -1044,6 +1107,7 @@ struct EditSetView: View {
                 TextField("العدات", text: $reps)
                     .keyboardType(.numberPad)
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("تعديل الجولة")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -1057,6 +1121,10 @@ struct EditSetView: View {
                         onSave(parsedReps, parsedWeight)
                         dismiss()
                     }
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("تم") { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
                 }
             }
         }

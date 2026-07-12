@@ -447,15 +447,18 @@ struct HomeView: View {
             let value = try await APIClient.shared.liveHeart()
             liveHeartMessage = value.message
 
-            // Strict rule: never show BPM without its matching measurement time.
+            // Show only a BPM with a real matching measurement time. If the
+            // newest request has no data, keep the last valid reading instead
+            // of replacing it with “غير متاح”.
             guard value.ok,
                   value.bpm != nil,
                   let measuredAt = value.measuredAt,
                   parseHealthDate(measuredAt) != nil
             else {
-                liveHeart = nil
-                LiveHeartLocalCache.clear()
-                if value.status == "no_data" {
+                if liveHeart == nil, let cached = LiveHeartLocalCache.load() {
+                    liveHeart = cached
+                }
+                if value.status == "no_data" || value.status == "unavailable" {
                     liveHeartMessage = value.message
                 }
                 return
@@ -505,26 +508,41 @@ struct HomeView: View {
         }
     }
 
-    private var liveHeartTitle: String {
-        guard let value = liveHeart,
-              value.bpm != nil,
-              value.measuredAt != nil
-        else { return "النبض" }
+    private var effectiveLiveHeart: LiveHeartResponse? {
+        if let liveHeart, liveHeart.bpm != nil, liveHeart.measuredAt != nil {
+            return liveHeart
+        }
+        guard let bpm = dashboard?.currentHR,
+              let measuredAt = dashboard?.currentHRTime,
+              parseHealthDate(measuredAt) != nil else { return nil }
+        return LiveHeartResponse(
+            ok: true,
+            status: "dashboard_fallback",
+            bpm: bpm,
+            measuredAt: measuredAt,
+            ageSeconds: nil,
+            stale: true,
+            needsReauth: false,
+            message: "آخر قراءة متاحة من مزامنة Fitbit."
+        )
+    }
 
+    private var liveHeartTitle: String {
+        guard let value = effectiveLiveHeart else { return "النبض" }
         return effectiveHeartAgeSeconds(value) <= 120 ? "النبض الآن" : "آخر نبض متاح"
     }
 
     private var liveHeartBPMText: String {
-        guard let bpm = liveHeart?.bpm else { return "غير متاح" }
+        guard let bpm = effectiveLiveHeart?.bpm else { return "بانتظار المزامنة" }
         return "\(bpm) BPM"
     }
 
     private var liveHeartSubtitle: String? {
-        guard let value = liveHeart,
+        guard let value = effectiveLiveHeart,
               value.bpm != nil,
               let measuredAt = value.measuredAt
         else {
-            return liveHeartMessage ?? "لا توجد قراءة نبض موثقة"
+            return liveHeartMessage ?? "اسحب للأسفل بعد مزامنة السوار"
         }
 
         let age = effectiveHeartAgeSeconds(value)

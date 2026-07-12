@@ -411,13 +411,13 @@ private struct PersonalSplashView: View {
                         .tracking(3.8)
                         .foregroundStyle(.white)
 
-                    Text("نسخة 2.2.1 الجديدة")
+                    Text("نسخة 2.2.2 الاحترافية")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(FitTheme.accent)
 
                     HStack(spacing: 7) {
                         Image(systemName: "lock.fill")
-                        Text("مخصص لأحمد المري فقط")
+                        Text("FitBit Air By Ahmad Almarri")
                     }
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.58))
