@@ -1184,25 +1184,6 @@ private struct ActivityLiveView: View {
         }
     }
 
-    @MainActor
-    private func deleteSession(_ session: ActivitySessionRecord) async {
-        guard !deletingSession else { return }
-        deletingSession = true
-        defer { deletingSession = false }
-        let oldSessions = sessions
-        sessions.removeAll { $0.id == session.id }
-        pendingDeleteSession = nil
-        do {
-            let response = try await APIClient.shared.deleteActivity(id: session.id, days: 30)
-            sessions = response.sessions
-            summary = response.summary
-            notice = "تم حذف النشاط من FitbitAir."
-        } catch {
-            sessions = oldSessions
-            errorMessage = "تعذر حذف النشاط: \(error.localizedDescription)"
-        }
-    }
-
     private static func clock(_ seconds: Int) -> String { String(format: "%02d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60) }
 }
 
