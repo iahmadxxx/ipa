@@ -39,9 +39,25 @@ jobs:
           grep -q "حذف من الجدول" "FitbitAir-iOS/FitbitAir/WorkoutView.swift"
           grep -q "activities/session/delete" "FitbitAir-iOS/FitbitAir/ActivityTracking.swift"
 
+          # Prevent the exact scope regression that broke Build 2206.
+          DELETE_FUNC_COUNT=$(grep -c "private func deleteSession(_ session: ActivitySessionRecord)" "FitbitAir-iOS/FitbitAir/ActivityTracking.swift")
+          test "$DELETE_FUNC_COUNT" -eq 1
+          grep -q "@State private var sessions: \[ActivitySessionRecord\]" "FitbitAir-iOS/FitbitAir/ActivityTracking.swift"
+
+          # Parse every Swift source before the full Xcode type-check/build.
+          while IFS= read -r -d '' source; do
+            xcrun swiftc -frontend -parse "$source"
+          done < <(find "FitbitAir-iOS/FitbitAir" -name "*.swift" -print0)
+
           # The server may be stored either in Railway-Server/ or at repository root.
           # It is not required by Xcode, but when present we verify the delete route.
-          if [ -f "Railway-Server/activity_tracker.py" ]; then
+          if [ -f "Railway-Server/activity_tracker.py" ] && [ -f "activity_tracker.py" ]; then
+            cmp -s "Railway-Server/activity_tracker.py" "activity_tracker.py" || {
+              echo "ERROR: Root and Railway-Server copies of activity_tracker.py are different"
+              exit 1
+            }
+            ACTIVITY_TRACKER="activity_tracker.py"
+          elif [ -f "Railway-Server/activity_tracker.py" ]; then
             ACTIVITY_TRACKER="Railway-Server/activity_tracker.py"
           elif [ -f "activity_tracker.py" ]; then
             ACTIVITY_TRACKER="activity_tracker.py"
@@ -56,7 +72,7 @@ jobs:
           fi
 
           # Documentation files are intentionally not required for an IPA build.
-          grep -q "نسخة 2.2.4 تحكم كامل وحركة احترافية" "FitbitAir-iOS/FitbitAir/FitbitAirApp.swift"
+          grep -q "نسخة 2.2.5 إصلاح جذري للبناء" "FitbitAir-iOS/FitbitAir/FitbitAirApp.swift"
           echo "Commit: $GITHUB_SHA"
           shasum -a 256 FitbitAir-iOS/FitbitAir/FitbitAirApp.swift FitbitAir-iOS/FitbitAir/WorkoutView.swift FitbitAir-iOS/FitbitAir/ActivityTracking.swift
           grep -q "ActivityTracking.swift in Sources" "FitbitAir-iOS/FitbitAir.xcodeproj/project.pbxproj"
@@ -114,11 +130,11 @@ jobs:
             "$PLISTBUDDY" -c "Add :$key $type $value" "$PLIST"
           }
 
-          set_plist_value "CFBundleDisplayName" string "FitbitAir 2.2.4"
+          set_plist_value "CFBundleDisplayName" string "FitbitAir 2.2.5"
           set_plist_value "CFBundleName" string "FitbitAir"
           set_plist_value "CFBundleIdentifier" string "com.ahmed.fitbitair"
-          set_plist_value "CFBundleShortVersionString" string "2.2.4"
-          set_plist_value "CFBundleVersion" string "2206"
+          set_plist_value "CFBundleShortVersionString" string "2.2.5"
+          set_plist_value "CFBundleVersion" string "2207"
           set_plist_value "CFBundleExecutable" string "FitbitAir"
           set_plist_value "CFBundlePackageType" string "APPL"
 
@@ -158,10 +174,10 @@ jobs:
           VERSION="$("$PLISTBUDDY" -c "Print :CFBundleShortVersionString" "$PLIST")"
           BUILD="$("$PLISTBUDDY" -c "Print :CFBundleVersion" "$PLIST")"
 
-          test "$NAME" = "FitbitAir 2.2.4"
+          test "$NAME" = "FitbitAir 2.2.5"
           test "$BUNDLE_ID" = "com.ahmed.fitbitair"
-          test "$VERSION" = "2.2.4"
-          test "$BUILD" = "2206"
+          test "$VERSION" = "2.2.5"
+          test "$BUILD" = "2207"
           test -f "$APP_PATH/AppIcon60x60@2x.png"
           test -f "$APP_PATH/AppIcon60x60@3x.png"
 
@@ -174,15 +190,15 @@ jobs:
           rm -rf "$RUNNER_TEMP/ipa"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           {
-            echo "version=2.2.4"
-            echo "build=2206"
+            echo "version=2.2.5"
+            echo "build=2207"
             echo "commit=$GITHUB_SHA"
             echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } > "$APP_PATH/FitbitAir-Build-Manifest.txt"
           cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/FitbitAir.app"
 
           cd "$RUNNER_TEMP/ipa"
-          /usr/bin/zip -qry "$GITHUB_WORKSPACE/FitbitAir-2.2.4-Build-2206-Unsigned.ipa" Payload
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/FitbitAir-2.2.5-Build-2207-Unsigned.ipa" Payload
 
       - name: Verify final IPA contents
         run: |
@@ -192,7 +208,7 @@ jobs:
           rm -rf "$VERIFY_DIR"
           mkdir -p "$VERIFY_DIR"
 
-          unzip -q "FitbitAir-2.2.4-Build-2206-Unsigned.ipa" -d "$VERIFY_DIR"
+          unzip -q "FitbitAir-2.2.5-Build-2207-Unsigned.ipa" -d "$VERIFY_DIR"
 
           FINAL_APP="$VERIFY_DIR/Payload/FitbitAir.app"
           FINAL_PLIST="$FINAL_APP/Info.plist"
@@ -214,17 +230,17 @@ jobs:
           echo "Version: $VERSION"
           echo "Build: $BUILD"
 
-          test "$NAME" = "FitbitAir 2.2.4"
+          test "$NAME" = "FitbitAir 2.2.5"
           test "$BUNDLE_ID" = "com.ahmed.fitbitair"
-          test "$VERSION" = "2.2.4"
-          test "$BUILD" = "2206"
+          test "$VERSION" = "2.2.5"
+          test "$BUILD" = "2207"
 
           echo "✅ FINAL IPA VERIFIED — safe to upload as artifact"
 
       - name: Upload verified IPA
         uses: actions/upload-artifact@v4
         with:
-          name: FitbitAir-2.2.4-Build-2206-VERIFIED
-          path: FitbitAir-2.2.4-Build-2206-Unsigned.ipa
+          name: FitbitAir-2.2.5-Build-2207-VERIFIED
+          path: FitbitAir-2.2.5-Build-2207-Unsigned.ipa
           if-no-files-found: error
           retention-days: 30
