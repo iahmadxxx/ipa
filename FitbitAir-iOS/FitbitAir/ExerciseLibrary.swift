@@ -632,43 +632,45 @@ struct ExerciseArtworkView: View {
             RoundedRectangle(cornerRadius: compact ? 18 : 28, style: .continuous)
                 .fill(
                     LinearGradient(
-                        colors: [FitTheme.backgroundSoft, exercise.primaryMuscle.tint.opacity(0.18)],
+                        colors: [Color.black, FitTheme.backgroundSoft, exercise.primaryMuscle.tint.opacity(0.13)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
                 )
+
             Group {
                 if animated && !compact {
                     TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
                         let seconds = timeline.date.timeIntervalSinceReferenceDate
-                        let wave = (sin(seconds * Double.pi / 1.35) + 1) / 2
+                        let wave = (sin(seconds * Double.pi / 1.45) + 1) / 2
                         ExercisePoseCanvas(exercise: exercise, progress: CGFloat(wave))
                     }
                 } else {
-                    ExercisePoseCanvas(exercise: exercise, progress: CGFloat(stage))
+                    ExercisePoseCanvas(exercise: exercise, progress: CGFloat(max(0, min(1, stage))))
                 }
             }
-            .padding(compact ? 8 : 14)
+            .padding(compact ? 5 : 10)
+
             VStack {
                 HStack {
                     Label(exercise.primaryMuscle.rawValue, systemImage: exercise.primaryMuscle.systemImage)
                         .font(compact ? .caption2.bold() : .caption.bold())
-                        .foregroundStyle(exercise.primaryMuscle.tint)
+                        .foregroundStyle(FitTheme.accent)
                         .padding(.horizontal, compact ? 7 : 10)
                         .padding(.vertical, compact ? 4 : 6)
-                        .background(.black.opacity(0.35), in: Capsule())
+                        .background(.black.opacity(0.62), in: Capsule())
                     Spacer()
                 }
                 Spacer()
                 if !compact {
                     HStack {
-                        Text(animated ? "حركة تعليمية متحركة" : (stage == 0 ? "وضع البداية" : "نهاية الحركة"))
+                        Label(animated ? "حركة متكررة" : (stage == 0 ? "وضع البداية" : "نهاية الحركة"), systemImage: animated ? "repeat" : "figure.strengthtraining.traditional")
                             .font(.caption.bold())
-                            .foregroundStyle(.white.opacity(0.75))
+                            .foregroundStyle(.white.opacity(0.78))
                         Spacer()
                         Label(exercise.equipment.rawValue, systemImage: exercise.equipment.systemImage)
                             .font(.caption.bold())
-                            .foregroundStyle(.white.opacity(0.65))
+                            .foregroundStyle(.white.opacity(0.66))
                     }
                 }
             }
@@ -676,9 +678,9 @@ struct ExerciseArtworkView: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: compact ? 18 : 28, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(FitTheme.accent.opacity(0.20), lineWidth: 1)
         )
-        .accessibilityLabel("رسم توضيحي لتمرين \(exercise.displayName)")
+        .accessibilityLabel("عرض متحرك لتمرين \(exercise.displayName) مع تحديد العضلة المستهدفة")
     }
 }
 
@@ -692,145 +694,336 @@ private struct ExercisePoseCanvas: View {
             let endPose = PoseLibrary.pose(exercise.pose, stage: 1)
             let pose = BodyPose.interpolated(from: startPose, to: endPose, progress: progress)
             let scale = min(size.width, size.height)
-            func point(_ value: CGPoint) -> CGPoint {
+
+            func pt(_ value: CGPoint) -> CGPoint {
                 CGPoint(x: value.x * size.width, y: value.y * size.height)
             }
-            func line(_ a: CGPoint, _ b: CGPoint, color: Color = .white.opacity(0.78), width: CGFloat = 0.055) {
+
+            func ellipse(_ center: CGPoint, rx: CGFloat, ry: CGFloat, color: Color, stroke: Color? = nil) {
+                let c = pt(center)
+                let rect = CGRect(x: c.x - rx * scale, y: c.y - ry * scale, width: rx * scale * 2, height: ry * scale * 2)
+                context.fill(Path(ellipseIn: rect), with: .color(color))
+                if let stroke { context.stroke(Path(ellipseIn: rect), with: .color(stroke), lineWidth: max(1, scale * 0.008)) }
+            }
+
+            func line(_ a: CGPoint, _ b: CGPoint, color: Color, width: CGFloat) {
                 var path = Path()
-                path.move(to: point(a))
-                path.addLine(to: point(b))
-                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: max(3, scale * width), lineCap: .round, lineJoin: .round))
-            }
-            func circle(_ center: CGPoint, radius: CGFloat, color: Color) {
-                let p = point(center)
-                let r = radius * scale
-                context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)), with: .color(color))
+                path.move(to: pt(a))
+                path.addLine(to: pt(b))
+                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: max(2, scale * width), lineCap: .round, lineJoin: .round))
             }
 
-            drawEquipment(context: &context, size: size, pose: pose, kind: exercise.pose, stage: progress >= 0.5 ? 1 : 0)
-
-            // A layered silhouette is clearer than the previous thin stick figure.
-            let shadow = Color.black.opacity(0.42)
-            let bodyColor = Color.white.opacity(0.90)
-            for (a, b, width) in [
-                (pose.leftShoulder, pose.leftElbow, CGFloat(0.075)),
-                (pose.leftElbow, pose.leftHand, CGFloat(0.066)),
-                (pose.rightShoulder, pose.rightElbow, CGFloat(0.075)),
-                (pose.rightElbow, pose.rightHand, CGFloat(0.066)),
-                (pose.hip, pose.leftKnee, CGFloat(0.092)),
-                (pose.leftKnee, pose.leftFoot, CGFloat(0.078)),
-                (pose.hip, pose.rightKnee, CGFloat(0.092)),
-                (pose.rightKnee, pose.rightFoot, CGFloat(0.078))
-            ] {
-                line(a, b, color: shadow, width: width + 0.035)
-                line(a, b, color: bodyColor, width: width)
+            func taperedPath(_ a: CGPoint, _ b: CGPoint, startWidth: CGFloat, endWidth: CGFloat) -> Path {
+                let pa = pt(a), pb = pt(b)
+                let dx = pb.x - pa.x, dy = pb.y - pa.y
+                let length = max(0.001, hypot(dx, dy))
+                let nx = -dy / length, ny = dx / length
+                let sw = startWidth * scale / 2, ew = endWidth * scale / 2
+                var path = Path()
+                path.move(to: CGPoint(x: pa.x + nx * sw, y: pa.y + ny * sw))
+                path.addQuadCurve(to: CGPoint(x: pb.x + nx * ew, y: pb.y + ny * ew), control: CGPoint(x: (pa.x + pb.x) / 2 + nx * max(sw, ew) * 1.08, y: (pa.y + pb.y) / 2 + ny * max(sw, ew) * 1.08))
+                path.addLine(to: CGPoint(x: pb.x - nx * ew, y: pb.y - ny * ew))
+                path.addQuadCurve(to: CGPoint(x: pa.x - nx * sw, y: pa.y - ny * sw), control: CGPoint(x: (pa.x + pb.x) / 2 - nx * max(sw, ew) * 1.08, y: (pa.y + pb.y) / 2 - ny * max(sw, ew) * 1.08))
+                path.closeSubpath()
+                return path
             }
 
+            func limb(_ a: CGPoint, _ b: CGPoint, startWidth: CGFloat, endWidth: CGFloat) {
+                let shadow = taperedPath(a, b, startWidth: startWidth + 0.025, endWidth: endWidth + 0.025)
+                context.fill(shadow, with: .color(.black.opacity(0.58)))
+                let path = taperedPath(a, b, startWidth: startWidth, endWidth: endWidth)
+                context.fill(path, with: .linearGradient(
+                    Gradient(colors: [Color.white.opacity(0.94), Color.gray.opacity(0.62)]),
+                    startPoint: pt(a), endPoint: pt(b)
+                ))
+                context.stroke(path, with: .color(.white.opacity(0.22)), lineWidth: max(1, scale * 0.006))
+            }
+
+            func highlight(_ a: CGPoint, _ b: CGPoint, width: CGFloat, opacity: Double = 0.96) {
+                line(a, b, color: FitTheme.accent.opacity(0.22), width: width + 0.035)
+                line(a, b, color: FitTheme.accent.opacity(opacity), width: width)
+            }
+
+            // Spotlight and floor make the movement easier to read.
+            let spotlight = Path(ellipseIn: CGRect(x: size.width * 0.16, y: size.height * 0.05, width: size.width * 0.68, height: size.height * 0.88))
+            context.fill(spotlight, with: .radialGradient(
+                Gradient(colors: [Color.white.opacity(0.09), Color.clear]),
+                center: CGPoint(x: size.width * 0.50, y: size.height * 0.45),
+                startRadius: 0,
+                endRadius: size.width * 0.48
+            ))
+            line(CGPoint(x: 0.08, y: 0.88), CGPoint(x: 0.92, y: 0.88), color: .white.opacity(0.10), width: 0.012)
+
+            drawEquipment(context: &context, size: size, pose: pose, kind: exercise.pose)
+
+            // Far-side limbs.
+            limb(pose.rightShoulder, pose.rightElbow, startWidth: 0.095, endWidth: 0.072)
+            limb(pose.rightElbow, pose.rightHand, startWidth: 0.070, endWidth: 0.045)
+            limb(pose.hip, pose.rightKnee, startWidth: 0.122, endWidth: 0.090)
+            limb(pose.rightKnee, pose.rightFoot, startWidth: 0.087, endWidth: 0.052)
+
+            // Anatomical torso: broad chest, narrower waist and pelvis.
+            let ls = pt(pose.leftShoulder), rs = pt(pose.rightShoulder), hp = pt(pose.hip)
+            let shoulderMid = CGPoint(x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2)
+            let dx = hp.x - shoulderMid.x, dy = hp.y - shoulderMid.y
+            let length = max(0.001, hypot(dx, dy))
+            let nx = -dy / length, ny = dx / length
+            let shoulderHalf = scale * 0.105
+            let waistHalf = scale * 0.060
+            let pelvisHalf = scale * 0.078
+            let waist = CGPoint(x: shoulderMid.x + dx * 0.68, y: shoulderMid.y + dy * 0.68)
             var torso = Path()
-            let ls = point(pose.leftShoulder), rs = point(pose.rightShoulder), hp = point(pose.hip)
-            let hipWidth = scale * 0.075
-            torso.move(to: ls)
-            torso.addLine(to: rs)
-            torso.addLine(to: CGPoint(x: hp.x + hipWidth, y: hp.y))
-            torso.addLine(to: CGPoint(x: hp.x - hipWidth, y: hp.y))
+            torso.move(to: CGPoint(x: shoulderMid.x + nx * shoulderHalf, y: shoulderMid.y + ny * shoulderHalf))
+            torso.addQuadCurve(to: CGPoint(x: waist.x + nx * waistHalf, y: waist.y + ny * waistHalf), control: CGPoint(x: shoulderMid.x + dx * 0.36 + nx * shoulderHalf * 1.10, y: shoulderMid.y + dy * 0.36 + ny * shoulderHalf * 1.10))
+            torso.addLine(to: CGPoint(x: hp.x + nx * pelvisHalf, y: hp.y + ny * pelvisHalf))
+            torso.addLine(to: CGPoint(x: hp.x - nx * pelvisHalf, y: hp.y - ny * pelvisHalf))
+            torso.addLine(to: CGPoint(x: waist.x - nx * waistHalf, y: waist.y - ny * waistHalf))
+            torso.addQuadCurve(to: CGPoint(x: shoulderMid.x - nx * shoulderHalf, y: shoulderMid.y - ny * shoulderHalf), control: CGPoint(x: shoulderMid.x + dx * 0.36 - nx * shoulderHalf * 1.10, y: shoulderMid.y + dy * 0.36 - ny * shoulderHalf * 1.10))
             torso.closeSubpath()
             context.fill(torso, with: .linearGradient(
-                Gradient(colors: [Color.white.opacity(0.92), Color.white.opacity(0.62)]),
-                startPoint: CGPoint(x: ls.x, y: ls.y),
-                endPoint: hp
+                Gradient(colors: [Color.white.opacity(0.97), Color.gray.opacity(0.58)]),
+                startPoint: shoulderMid, endPoint: hp
             ))
-            context.stroke(torso, with: .color(Color.black.opacity(0.25)), lineWidth: 2)
+            context.stroke(torso, with: .color(.white.opacity(0.24)), lineWidth: max(1, scale * 0.007))
 
-            circle(pose.head, radius: 0.075, color: Color.white.opacity(0.96))
-            circle(pose.neck, radius: 0.036, color: bodyColor)
-            circle(pose.hip, radius: 0.065, color: bodyColor)
+            // Chest/abdomen definition lines without making the artwork busy.
+            line(pose.neck, pose.hip, color: .black.opacity(0.16), width: 0.008)
+            line(CGPoint(x: pose.neck.x - 0.045, y: pose.neck.y + 0.08), CGPoint(x: pose.neck.x + 0.045, y: pose.neck.y + 0.08), color: .black.opacity(0.12), width: 0.008)
 
-            let target = exercise.primaryMuscle.tint
-            switch exercise.primaryMuscle {
-            case .chest:
-                circle(CGPoint(x: (pose.leftShoulder.x + pose.rightShoulder.x) / 2, y: (pose.neck.y + pose.hip.y) / 2 - 0.03), radius: 0.075, color: target.opacity(0.9))
-            case .back:
-                line(pose.neck, pose.hip, color: target, width: 0.09)
-            case .shoulders:
-                circle(pose.leftShoulder, radius: 0.055, color: target)
-                circle(pose.rightShoulder, radius: 0.055, color: target)
-            case .biceps:
-                line(pose.leftShoulder, pose.leftElbow, color: target, width: 0.075)
-                line(pose.rightShoulder, pose.rightElbow, color: target, width: 0.075)
-            case .triceps:
-                line(pose.leftElbow, pose.leftHand, color: target, width: 0.075)
-                line(pose.rightElbow, pose.rightHand, color: target, width: 0.075)
-            case .legs:
-                line(pose.hip, pose.leftKnee, color: target, width: 0.085)
-                line(pose.hip, pose.rightKnee, color: target, width: 0.085)
-            case .glutes:
-                circle(pose.hip, radius: 0.085, color: target.opacity(0.95))
-            case .core:
-                line(pose.neck, pose.hip, color: target, width: 0.105)
-            case .all:
-                circle(pose.hip, radius: 0.055, color: FitTheme.accent)
+            // Near-side limbs.
+            limb(pose.leftShoulder, pose.leftElbow, startWidth: 0.098, endWidth: 0.074)
+            limb(pose.leftElbow, pose.leftHand, startWidth: 0.072, endWidth: 0.046)
+            limb(pose.hip, pose.leftKnee, startWidth: 0.126, endWidth: 0.092)
+            limb(pose.leftKnee, pose.leftFoot, startWidth: 0.090, endWidth: 0.054)
+
+            // Head, neck and joints.
+            ellipse(pose.head, rx: 0.060, ry: 0.078, color: .white.opacity(0.96), stroke: .black.opacity(0.24))
+            ellipse(pose.neck, rx: 0.032, ry: 0.040, color: .white.opacity(0.88))
+            ellipse(pose.leftShoulder, rx: 0.050, ry: 0.050, color: .white.opacity(0.90))
+            ellipse(pose.rightShoulder, rx: 0.050, ry: 0.050, color: .white.opacity(0.82))
+            ellipse(pose.hip, rx: 0.072, ry: 0.060, color: .gray.opacity(0.70))
+
+            // Secondary muscles remain visible but softer.
+            for muscle in exercise.secondaryMuscles.prefix(2) {
+                drawMuscle(muscle, pose: pose, opacity: 0.34, context: &context, size: size, scale: scale, line: line, ellipse: ellipse, highlight: highlight)
             }
+            drawMuscle(exercise.primaryMuscle, pose: pose, opacity: 0.98, context: &context, size: size, scale: scale, line: line, ellipse: ellipse, highlight: highlight)
         }
     }
 
-    private func drawEquipment(context: inout GraphicsContext, size: CGSize, pose: BodyPose, kind: ExercisePoseKind, stage: Int) {
+    private func drawMuscle(
+        _ muscle: ExerciseMuscleGroup,
+        pose: BodyPose,
+        opacity: Double,
+        context: inout GraphicsContext,
+        size: CGSize,
+        scale: CGFloat,
+        line: (CGPoint, CGPoint, Color, CGFloat) -> Void,
+        ellipse: (CGPoint, CGFloat, CGFloat, Color, Color?) -> Void,
+        highlight: (CGPoint, CGPoint, CGFloat, Double) -> Void
+    ) {
+        let color = FitTheme.accent.opacity(opacity)
+        let shoulderMid = CGPoint(x: (pose.leftShoulder.x + pose.rightShoulder.x) / 2, y: (pose.leftShoulder.y + pose.rightShoulder.y) / 2)
+        let torsoMid = CGPoint(x: (shoulderMid.x + pose.hip.x) / 2, y: (shoulderMid.y + pose.hip.y) / 2)
+        switch muscle {
+        case .chest:
+            ellipse(CGPoint(x: torsoMid.x - 0.035, y: torsoMid.y - 0.045), 0.055, 0.038, color, nil)
+            ellipse(CGPoint(x: torsoMid.x + 0.035, y: torsoMid.y - 0.045), 0.055, 0.038, color, nil)
+        case .back:
+            line(CGPoint(x: shoulderMid.x - 0.055, y: shoulderMid.y + 0.04), CGPoint(x: pose.hip.x - 0.035, y: pose.hip.y - 0.03), color, 0.052)
+            line(CGPoint(x: shoulderMid.x + 0.055, y: shoulderMid.y + 0.04), CGPoint(x: pose.hip.x + 0.035, y: pose.hip.y - 0.03), color, 0.052)
+        case .shoulders:
+            ellipse(pose.leftShoulder, 0.052, 0.052, color, nil)
+            ellipse(pose.rightShoulder, 0.052, 0.052, color, nil)
+        case .biceps:
+            highlight(pose.leftShoulder, pose.leftElbow, 0.052, opacity)
+            highlight(pose.rightShoulder, pose.rightElbow, 0.052, opacity)
+        case .triceps:
+            highlight(CGPoint(x: pose.leftShoulder.x + 0.012, y: pose.leftShoulder.y + 0.012), CGPoint(x: pose.leftElbow.x + 0.012, y: pose.leftElbow.y + 0.012), 0.047, opacity)
+            highlight(CGPoint(x: pose.rightShoulder.x + 0.012, y: pose.rightShoulder.y + 0.012), CGPoint(x: pose.rightElbow.x + 0.012, y: pose.rightElbow.y + 0.012), 0.047, opacity)
+        case .legs:
+            highlight(pose.hip, pose.leftKnee, 0.070, opacity)
+            highlight(pose.hip, pose.rightKnee, 0.070, opacity)
+            highlight(pose.leftKnee, pose.leftFoot, 0.045, opacity * 0.82)
+            highlight(pose.rightKnee, pose.rightFoot, 0.045, opacity * 0.82)
+        case .glutes:
+            ellipse(CGPoint(x: pose.hip.x - 0.038, y: pose.hip.y), 0.052, 0.048, color, nil)
+            ellipse(CGPoint(x: pose.hip.x + 0.038, y: pose.hip.y), 0.052, 0.048, color, nil)
+        case .core:
+            for row in 0..<3 {
+                let y = torsoMid.y - 0.005 + CGFloat(row) * 0.043
+                ellipse(CGPoint(x: torsoMid.x - 0.026, y: y), 0.021, 0.025, color, nil)
+                ellipse(CGPoint(x: torsoMid.x + 0.026, y: y), 0.021, 0.025, color, nil)
+            }
+        case .all:
+            line(pose.neck, pose.hip, color, 0.060)
+        }
+    }
+
+    private func drawEquipment(context: inout GraphicsContext, size: CGSize, pose: BodyPose, kind: ExercisePoseKind) {
         let scale = min(size.width, size.height)
         func p(_ q: CGPoint) -> CGPoint { CGPoint(x: q.x * size.width, y: q.y * size.height) }
-        func stroke(_ points: [CGPoint], color: Color = .white.opacity(0.25), width: CGFloat = 0.025) {
+        func stroke(_ points: [CGPoint], color: Color = .white.opacity(0.30), width: CGFloat = 0.025) {
             guard let first = points.first else { return }
-            var path = Path()
-            path.move(to: p(first))
+            var path = Path(); path.move(to: p(first))
             for point in points.dropFirst() { path.addLine(to: p(point)) }
             context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: max(2, scale * width), lineCap: .round, lineJoin: .round))
         }
         func disk(_ q: CGPoint, radius: CGFloat) {
-            let center = p(q); let r = radius * scale
-            context.fill(Path(ellipseIn: CGRect(x: center.x-r, y: center.y-r, width: r*2, height: r*2)), with: .color(Color.white.opacity(0.28)))
+            let center = p(q), r = radius * scale
+            let rect = CGRect(x: center.x-r, y: center.y-r, width: r*2, height: r*2)
+            context.fill(Path(ellipseIn: rect), with: .linearGradient(Gradient(colors: [Color.gray.opacity(0.95), Color.black.opacity(0.95)]), startPoint: CGPoint(x: rect.minX, y: rect.minY), endPoint: CGPoint(x: rect.maxX, y: rect.maxY)))
+            context.stroke(Path(ellipseIn: rect), with: .color(.white.opacity(0.20)), lineWidth: 1)
         }
 
         switch kind {
         case .horizontalPress, .inclinePress, .fly:
-            stroke([CGPoint(x: 0.18, y: 0.68), CGPoint(x: 0.78, y: kind == .inclinePress ? 0.42 : 0.68)], width: 0.035)
+            stroke([CGPoint(x: 0.17, y: 0.69), CGPoint(x: 0.79, y: kind == .inclinePress ? 0.43 : 0.69)], color: .gray.opacity(0.75), width: 0.038)
+            stroke([CGPoint(x: 0.22, y: 0.70), CGPoint(x: 0.18, y: 0.86)], color: .gray.opacity(0.55), width: 0.021)
+            stroke([CGPoint(x: 0.72, y: 0.69), CGPoint(x: 0.78, y: 0.86)], color: .gray.opacity(0.55), width: 0.021)
             if kind != .fly {
-                stroke([pose.leftHand, pose.rightHand], color: .white.opacity(0.55), width: 0.025)
-                disk(CGPoint(x: pose.leftHand.x - 0.05, y: pose.leftHand.y), radius: 0.045)
-                disk(CGPoint(x: pose.rightHand.x + 0.05, y: pose.rightHand.y), radius: 0.045)
-            } else {
-                disk(pose.leftHand, radius: 0.04); disk(pose.rightHand, radius: 0.04)
-            }
+                stroke([pose.leftHand, pose.rightHand], color: .gray.opacity(0.92), width: 0.022)
+                disk(CGPoint(x: pose.leftHand.x - 0.055, y: pose.leftHand.y), radius: 0.047)
+                disk(CGPoint(x: pose.rightHand.x + 0.055, y: pose.rightHand.y), radius: 0.047)
+            } else { disk(pose.leftHand, radius: 0.037); disk(pose.rightHand, radius: 0.037) }
         case .verticalPull:
-            stroke([CGPoint(x: 0.16, y: 0.13), CGPoint(x: 0.84, y: 0.13)], color: .white.opacity(0.45), width: 0.025)
-            stroke([CGPoint(x: 0.50, y: 0.13), CGPoint(x: 0.50, y: 0.28)], width: 0.015)
+            stroke([CGPoint(x: 0.15, y: 0.13), CGPoint(x: 0.85, y: 0.13)], color: .gray.opacity(0.78), width: 0.023)
+            stroke([CGPoint(x: 0.50, y: 0.13), CGPoint(x: 0.50, y: 0.29)], color: .gray.opacity(0.52), width: 0.012)
         case .row:
-            stroke([CGPoint(x: 0.12, y: 0.76), CGPoint(x: 0.88, y: 0.76)], width: 0.02)
+            stroke([CGPoint(x: 0.11, y: 0.77), CGPoint(x: 0.89, y: 0.77)], color: .gray.opacity(0.48), width: 0.021)
             disk(pose.leftHand, radius: 0.035); disk(pose.rightHand, radius: 0.035)
         case .hinge, .squat:
-            stroke([pose.leftHand, pose.rightHand], color: .white.opacity(0.5), width: 0.025)
-            disk(CGPoint(x: pose.leftHand.x - 0.05, y: pose.leftHand.y), radius: 0.045)
-            disk(CGPoint(x: pose.rightHand.x + 0.05, y: pose.rightHand.y), radius: 0.045)
-            stroke([CGPoint(x: 0.12, y: 0.86), CGPoint(x: 0.88, y: 0.86)], width: 0.018)
+            stroke([pose.leftHand, pose.rightHand], color: .gray.opacity(0.92), width: 0.022)
+            disk(CGPoint(x: pose.leftHand.x - 0.055, y: pose.leftHand.y), radius: 0.047)
+            disk(CGPoint(x: pose.rightHand.x + 0.055, y: pose.rightHand.y), radius: 0.047)
         case .lunge, .curl, .shoulderPress, .lateralRaise:
-            disk(pose.leftHand, radius: 0.04); disk(pose.rightHand, radius: 0.04)
-            stroke([CGPoint(x: 0.12, y: 0.86), CGPoint(x: 0.88, y: 0.86)], width: 0.018)
+            disk(pose.leftHand, radius: 0.040); disk(pose.rightHand, radius: 0.040)
         case .triceps:
-            stroke([CGPoint(x: 0.78, y: 0.12), CGPoint(x: 0.78, y: 0.82)], width: 0.018)
-            stroke([CGPoint(x: 0.78, y: 0.12), pose.rightHand], width: 0.012)
+            stroke([CGPoint(x: 0.79, y: 0.11), CGPoint(x: 0.79, y: 0.84)], color: .gray.opacity(0.62), width: 0.020)
+            stroke([CGPoint(x: 0.79, y: 0.12), pose.rightHand], color: .gray.opacity(0.54), width: 0.011)
         case .dip:
-            stroke([CGPoint(x: 0.20, y: 0.55), CGPoint(x: 0.42, y: 0.55)], width: 0.025)
-            stroke([CGPoint(x: 0.58, y: 0.55), CGPoint(x: 0.80, y: 0.55)], width: 0.025)
+            stroke([CGPoint(x: 0.18, y: 0.56), CGPoint(x: 0.43, y: 0.56)], color: .gray.opacity(0.75), width: 0.025)
+            stroke([CGPoint(x: 0.57, y: 0.56), CGPoint(x: 0.82, y: 0.56)], color: .gray.opacity(0.75), width: 0.025)
         case .legMachine:
-            stroke([CGPoint(x: 0.18, y: 0.72), CGPoint(x: 0.68, y: 0.72)], width: 0.035)
-            stroke([CGPoint(x: 0.68, y: 0.72), CGPoint(x: 0.82, y: 0.48)], width: 0.03)
+            stroke([CGPoint(x: 0.17, y: 0.73), CGPoint(x: 0.68, y: 0.73)], color: .gray.opacity(0.72), width: 0.038)
+            stroke([CGPoint(x: 0.68, y: 0.73), CGPoint(x: 0.83, y: 0.48)], color: .gray.opacity(0.65), width: 0.031)
         case .hipThrust:
-            stroke([CGPoint(x: 0.16, y: 0.58), CGPoint(x: 0.43, y: 0.58)], width: 0.04)
-            stroke([CGPoint(x: 0.12, y: 0.86), CGPoint(x: 0.88, y: 0.86)], width: 0.018)
+            stroke([CGPoint(x: 0.15, y: 0.59), CGPoint(x: 0.44, y: 0.59)], color: .gray.opacity(0.75), width: 0.041)
         case .calfRaise:
-            stroke([CGPoint(x: 0.30, y: 0.84), CGPoint(x: 0.70, y: 0.84)], width: 0.035)
+            stroke([CGPoint(x: 0.29, y: 0.85), CGPoint(x: 0.71, y: 0.85)], color: .gray.opacity(0.72), width: 0.035)
         case .core, .plank, .pushUp:
-            stroke([CGPoint(x: 0.10, y: 0.82), CGPoint(x: 0.90, y: 0.82)], width: 0.018)
+            break
         }
     }
 }
+
+struct MuscleAnatomyMapView: View {
+    let primary: ExerciseMuscleGroup
+    let secondary: [ExerciseMuscleGroup]
+
+    var body: some View {
+        HStack(spacing: 18) {
+            anatomyFigure(back: false)
+            anatomyFigure(back: true)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("العضلة الأساسية")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.48))
+                Label(primary.rawValue, systemImage: primary.systemImage)
+                    .font(.headline)
+                    .foregroundStyle(FitTheme.accent)
+                if !secondary.isEmpty {
+                    Text("مساعدة: \(secondary.map(\.rawValue).joined(separator: "، "))")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.62))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func anatomyFigure(back: Bool) -> some View {
+        VStack(spacing: 4) {
+            StandingAnatomyFigure(primary: primary, secondary: secondary, back: back)
+                .frame(width: 74, height: 150)
+            Text(back ? "خلف" : "أمام")
+                .font(.caption2.bold())
+                .foregroundStyle(.white.opacity(0.48))
+        }
+    }
+}
+
+private struct StandingAnatomyFigure: View {
+    let primary: ExerciseMuscleGroup
+    let secondary: [ExerciseMuscleGroup]
+    let back: Bool
+
+    var body: some View {
+        Canvas { context, size in
+            let s = min(size.width, size.height)
+            func rect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ radius: CGFloat, _ color: Color) {
+                let r = CGRect(x: x * size.width, y: y * size.height, width: w * size.width, height: h * size.height)
+                context.fill(RoundedRectangle(cornerRadius: radius * s, style: .continuous).path(in: r), with: .color(color))
+            }
+            func oval(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ color: Color) {
+                context.fill(Path(ellipseIn: CGRect(x: x * size.width, y: y * size.height, width: w * size.width, height: h * size.height)), with: .color(color))
+            }
+            let body = Color.white.opacity(0.80)
+            oval(0.37, 0.02, 0.26, 0.16, body)
+            rect(0.44, 0.16, 0.12, 0.06, 0.03, body)
+            // torso and pelvis
+            var torso = Path()
+            torso.move(to: CGPoint(x: size.width * 0.25, y: size.height * 0.21))
+            torso.addLine(to: CGPoint(x: size.width * 0.75, y: size.height * 0.21))
+            torso.addLine(to: CGPoint(x: size.width * 0.64, y: size.height * 0.57))
+            torso.addLine(to: CGPoint(x: size.width * 0.36, y: size.height * 0.57))
+            torso.closeSubpath()
+            context.fill(torso, with: .linearGradient(Gradient(colors: [body, Color.gray.opacity(0.55)]), startPoint: CGPoint(x: size.width * 0.5, y: size.height * 0.2), endPoint: CGPoint(x: size.width * 0.5, y: size.height * 0.6)))
+            oval(0.34, 0.53, 0.32, 0.14, body)
+            rect(0.14, 0.23, 0.13, 0.35, 0.06, body)
+            rect(0.73, 0.23, 0.13, 0.35, 0.06, body)
+            rect(0.32, 0.63, 0.15, 0.35, 0.07, body)
+            rect(0.53, 0.63, 0.15, 0.35, 0.07, body)
+
+            for muscle in secondary.prefix(2) { draw(muscle, opacity: 0.30, context: &context, size: size, back: back) }
+            draw(primary, opacity: 0.98, context: &context, size: size, back: back)
+        }
+    }
+
+    private func draw(_ muscle: ExerciseMuscleGroup, opacity: Double, context: inout GraphicsContext, size: CGSize, back: Bool) {
+        let c = FitTheme.accent.opacity(opacity)
+        func oval(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) {
+            context.fill(Path(ellipseIn: CGRect(x: x * size.width, y: y * size.height, width: w * size.width, height: h * size.height)), with: .color(c))
+        }
+        func rr(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ r: CGFloat = 8) {
+            context.fill(RoundedRectangle(cornerRadius: r, style: .continuous).path(in: CGRect(x: x * size.width, y: y * size.height, width: w * size.width, height: h * size.height)), with: .color(c))
+        }
+        switch muscle {
+        case .chest:
+            if !back { oval(0.30, 0.25, 0.20, 0.12); oval(0.50, 0.25, 0.20, 0.12) }
+        case .back:
+            if back { rr(0.31, 0.25, 0.38, 0.25, 12) }
+        case .shoulders:
+            oval(0.16, 0.22, 0.16, 0.13); oval(0.68, 0.22, 0.16, 0.13)
+        case .biceps:
+            if !back { rr(0.15, 0.31, 0.12, 0.18); rr(0.73, 0.31, 0.12, 0.18) }
+        case .triceps:
+            if back { rr(0.15, 0.31, 0.12, 0.20); rr(0.73, 0.31, 0.12, 0.20) }
+        case .legs:
+            rr(0.32, 0.66, 0.14, 0.28); rr(0.54, 0.66, 0.14, 0.28)
+        case .glutes:
+            if back { oval(0.34, 0.54, 0.16, 0.12); oval(0.50, 0.54, 0.16, 0.12) }
+        case .core:
+            if !back {
+                for row in 0..<3 { oval(0.39, 0.34 + CGFloat(row) * 0.07, 0.10, 0.06); oval(0.51, 0.34 + CGFloat(row) * 0.07, 0.10, 0.06) }
+            }
+        case .all:
+            rr(0.28, 0.24, 0.44, 0.34, 12)
+        }
+    }
+}
+
 
 private struct BodyPose {
     let head: CGPoint

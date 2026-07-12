@@ -48,6 +48,8 @@ private struct NutritionDashboardView: View {
     @State private var newMealName = ""
     @State private var actionsExpanded = true
     @State private var mealsExpanded = true
+    @State private var pendingDelete: NutritionEntry?
+    @State private var deletingEntryID: Int?
 
     var body: some View {
         ScrollView {
@@ -148,6 +150,19 @@ private struct NutritionDashboardView: View {
             Button("إلغاء", role: .cancel) { newMealName = "" }
         } message: {
             Text("تقدر تضيف أي عدد من الوجبات، وتظهر كقسم مستقل في سجل اليوم.")
+        }
+        .alert("حذف العنصر؟", isPresented: Binding(
+            get: { pendingDelete != nil },
+            set: { if !$0 { pendingDelete = nil } }
+        )) {
+            Button("حذف نهائيًا", role: .destructive) {
+                guard let entry = pendingDelete else { return }
+                pendingDelete = nil
+                Task { await delete(entry) }
+            }
+            Button("إلغاء", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text(pendingDelete.map { "سيتم حذف \($0.name) من سجل اليوم وتحديث السعرات والماكروز." } ?? "")
         }
     }
 
@@ -303,12 +318,29 @@ private struct NutritionDashboardView: View {
                                             .foregroundStyle(.white.opacity(0.56))
                                     }
                                     Spacer()
-                                    Button(role: .destructive) {
-                                        Task { await delete(entry) }
+                                    Button {
+                                        pendingDelete = entry
                                     } label: {
-                                        Image(systemName: "trash")
-                                            .foregroundStyle(FitTheme.danger)
-                                            .padding(8)
+                                        HStack(spacing: 5) {
+                                            if deletingEntryID == entry.id {
+                                                ProgressView().controlSize(.small).tint(.white)
+                                            } else {
+                                                Image(systemName: "trash.fill")
+                                            }
+                                            Text("حذف")
+                                                .font(.caption.bold())
+                                        }
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 8)
+                                        .background(FitTheme.danger.opacity(0.82), in: Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(deletingEntryID != nil)
+                                    .contextMenu {
+                                        Button("حذف من سجل اليوم", role: .destructive) {
+                                            pendingDelete = entry
+                                        }
                                     }
                                 }
                                 if entry.id != group.1.last?.id { Divider().overlay(Color.white.opacity(0.08)) }
@@ -382,11 +414,46 @@ private struct NutritionDashboardView: View {
 
     @MainActor
     private func delete(_ entry: NutritionEntry) async {
+        guard deletingEntryID == nil else { return }
+        deletingEntryID = entry.id
+        defer { deletingEntryID = nil }
+
+        // Remove it immediately from the screen, then restore by reloading if
+        // the server rejects the operation. This makes the action feel instant
+        // and prevents double taps.
+        let previous = data
+        if let current = data {
+            let remainingEntries = current.entries.filter { $0.id != entry.id }
+            let totals = MacroValues(
+                calories: max(0, (current.totals.calories ?? 0) - entry.calories),
+                protein: max(0, (current.totals.protein ?? 0) - entry.protein),
+                carbs: max(0, (current.totals.carbs ?? 0) - entry.carbs),
+                fat: max(0, (current.totals.fat ?? 0) - entry.fat)
+            )
+            let remaining = MacroValues(
+                calories: current.goals.calories.map { max(0, $0 - (totals.calories ?? 0)) },
+                protein: current.goals.protein.map { max(0, $0 - (totals.protein ?? 0)) },
+                carbs: current.goals.carbs.map { max(0, $0 - (totals.carbs ?? 0)) },
+                fat: current.goals.fat.map { max(0, $0 - (totals.fat ?? 0)) }
+            )
+            data = NutritionDayResponse(
+                ok: current.ok,
+                date: current.date,
+                goals: current.goals,
+                totals: totals,
+                remaining: remaining,
+                entries: remainingEntries,
+                savedID: current.savedID
+            )
+        }
+
         do {
-            try await APIClient.shared.deleteNutritionEntry(id: entry.id)
-            await load()
+            data = try await APIClient.shared.deleteNutritionEntry(id: entry.id)
+            error = nil
+            statusMessage = "تم حذف \(entry.name)."
         } catch {
-            self.error = error.localizedDescription
+            data = previous
+            self.error = "تعذر حذف العنصر: \(error.localizedDescription)"
         }
     }
 

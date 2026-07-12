@@ -411,7 +411,7 @@ private struct PersonalSplashView: View {
                         .tracking(3.8)
                         .foregroundStyle(.white)
 
-                    Text("نسخة 2.2.2 الاحترافية")
+                    Text("نسخة 2.2.4 تحكم كامل وحركة احترافية")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(FitTheme.accent)
 

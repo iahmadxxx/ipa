@@ -264,6 +264,7 @@ actor APIClient {
     }
     func bodySummary() async throws -> BodySummaryResponse { try await request("api/ios/body") }
     func addBodyWeight(_ weight: Double) async throws -> BodySummaryResponse { try await request("api/ios/body/weight", method: "POST", body: ["weight": weight]) }
+    func deleteBodyWeight(id: Int) async throws -> BodySummaryResponse { try await request("api/ios/body/weight/delete", method: "POST", body: ["id": id]) }
     func saveBodyProfile(targetWeight: Double?, dailyCalories: Int?, proteinGrams: Int?, carbGrams: Int? = nil, fatGrams: Int? = nil) async throws -> BodySummaryResponse {
         var body: [String: Any] = [:]
         if let targetWeight { body["target_weight"] = targetWeight }
@@ -390,7 +391,7 @@ actor APIClient {
         if let date { body["date"] = date }
         return try await request("api/ios/nutrition/log", method: "POST", body: body)
     }
-    func fa2DeleteFood(id: Int) async throws { let _: SimpleResponse = try await request("api/ios/nutrition/log/delete", method: "POST", body: ["id":id]) }
+    func fa2DeleteFood(id: Int) async throws -> FA2NutritionDay { try await request("api/ios/nutrition/log/delete", method: "POST", body: ["id":id]) }
     func fa2FavoriteProduct(id: Int, favorite: Bool) async throws { let _: SimpleResponse = try await request("api/ios/nutrition/product/favorite", method: "POST", body: ["id":id,"favorite":favorite]) }
     func fa2AnalyzeFoodImage(base64: String, mode: String) async throws -> FA2ImageFoodResponse {
         try await request("api/ios/nutrition/analyze-image", method: "POST", body: ["image_base64":base64,"mime_type":"image/jpeg","mode":mode], timeout: 90)
@@ -466,7 +467,7 @@ actor APIClient {
         return nativeNutrition(try await fa2LogFood(product: product, grams: grams, meal: mealType, date: date))
     }
 
-    func deleteNutritionEntry(id: Int) async throws { try await fa2DeleteFood(id: id) }
+    func deleteNutritionEntry(id: Int) async throws -> NutritionDayResponse { nativeNutrition(try await fa2DeleteFood(id: id)) }
 
     func lookupBarcode(_ code: String) async throws -> ProductLookupResponse {
         let value = try await fa2LookupBarcode(code)

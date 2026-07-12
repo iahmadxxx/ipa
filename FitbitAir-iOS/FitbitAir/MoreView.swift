@@ -1683,6 +1683,7 @@ struct BodyGoalsView: View {
     @State private var saving = false
     @State private var message: String?
     @State private var error: String?
+    @State private var pendingDeleteWeight: BodyWeightEntry?
 
     var body: some View {
         ZStack {
@@ -1760,11 +1761,28 @@ struct BodyGoalsView: View {
                         GlassCard {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("آخر التسجيلات").font(.headline).foregroundStyle(.white)
-                                ForEach(entries.prefix(10)) { entry in
-                                    HStack {
+                                ForEach(entries.prefix(30)) { entry in
+                                    HStack(spacing: 10) {
                                         Text(String(entry.loggedAt.prefix(10))).foregroundStyle(.white.opacity(0.6))
                                         Spacer()
                                         Text("\(entry.weight.gymFormatted) كجم").fontWeight(.semibold).foregroundStyle(.white)
+                                        Menu {
+                                            Button(role: .destructive) {
+                                                pendingDeleteWeight = entry
+                                            } label: {
+                                                Label("حذف التسجيل", systemImage: "trash")
+                                            }
+                                        } label: {
+                                            Image(systemName: "ellipsis.circle")
+                                                .foregroundStyle(.white.opacity(0.5))
+                                        }
+                                    }
+                                    .contextMenu {
+                                        Button(role: .destructive) {
+                                            pendingDeleteWeight = entry
+                                        } label: {
+                                            Label("حذف التسجيل", systemImage: "trash")
+                                        }
                                     }
                                     Divider().overlay(.white.opacity(0.08))
                                 }
@@ -1782,6 +1800,22 @@ struct BodyGoalsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .refreshable { await load() }
+        .confirmationDialog(
+            "حذف تسجيل الوزن؟",
+            isPresented: Binding(
+                get: { pendingDeleteWeight != nil },
+                set: { if !$0 { pendingDeleteWeight = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("حذف التسجيل", role: .destructive) {
+                guard let entry = pendingDeleteWeight else { return }
+                Task { await deleteWeight(entry) }
+            }
+            Button("إلغاء", role: .cancel) { pendingDeleteWeight = nil }
+        } message: {
+            Text("سيتم تحديث المتوسط والاتجاه بعد حذف هذا التسجيل.")
+        }
     }
 
     private func projectedGoalText(_ value: BodySummaryResponse) -> String? {
@@ -1835,6 +1869,19 @@ struct BodyGoalsView: View {
             apply(try await APIClient.shared.addWaist(x, note: waistNote))
             waist = ""; waistNote = ""; message = "تم حفظ قياس الخصر"
         } catch { self.error = error.localizedDescription }
+        saving = false
+    }
+
+    @MainActor
+    private func deleteWeight(_ entry: BodyWeightEntry) async {
+        saving = true; error = nil
+        pendingDeleteWeight = nil
+        do {
+            apply(try await APIClient.shared.deleteBodyWeight(id: entry.id))
+            message = "تم حذف تسجيل الوزن"
+        } catch {
+            self.error = error.localizedDescription
+        }
         saving = false
     }
 

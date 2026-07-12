@@ -170,81 +170,207 @@ private struct WorkoutSectionCard: View {
     let allDays: [WorkoutDay]
     let onPlanChanged: () -> Void
 
+    @State private var isExpanded = false
+    @State private var pendingDeleteExercise: String?
+    @State private var pendingDeleteSection = false
+    @State private var deleting = false
+    @State private var deleteError: String?
+
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(day.label)
-                            .font(.title3.bold())
-                        Text("اسحب الإدارة للتعديل والحذف")
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.38))
+            VStack(alignment: .leading, spacing: isExpanded ? 12 : 0) {
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            isExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                    .fill(FitTheme.accent.opacity(0.13))
+                                    .frame(width: 48, height: 48)
+                                Image(systemName: "dumbbell.fill")
+                                    .foregroundStyle(FitTheme.accent)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(day.label)
+                                    .font(.title3.bold())
+                                    .foregroundStyle(.white)
+                                Text(isExpanded ? "اضغط لإخفاء التمارين" : "اضغط لعرض التمارين")
+                                    .font(.caption2)
+                                    .foregroundStyle(.white.opacity(0.42))
+                            }
+
+                            Spacer()
+
+                            Text("\(day.exercises.count) تمارين")
+                                .font(.caption.bold())
+                                .foregroundStyle(FitTheme.accent)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(FitTheme.accent.opacity(0.12), in: Capsule())
+
+                            Image(systemName: isExpanded ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(FitTheme.accent)
+                        }
+                        .contentShape(Rectangle())
                     }
-                    Spacer()
-                    Text("\(day.exercises.count) تمارين")
-                        .font(.caption.bold())
-                        .foregroundStyle(.cyan)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.cyan.opacity(0.12), in: Capsule())
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isExpanded ? "إخفاء تمارين \(day.label)" : "عرض تمارين \(day.label)")
+
+                    Menu {
+                        Button(role: .destructive) {
+                            pendingDeleteSection = true
+                        } label: {
+                            Label("حذف القسم", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.title3)
+                            .foregroundStyle(.white.opacity(0.54))
+                            .frame(width: 34, height: 48)
+                    }
+                    .accessibilityLabel("خيارات قسم \(day.label)")
                 }
 
-                if day.exercises.isEmpty {
-                    Text("لا توجد تمارين داخل هذا القسم")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(day.exercises.enumerated()), id: \.offset) { index, exerciseName in
-                        let exercise = ExerciseCatalog.resolved(exerciseName)
-                        let prescription = ExercisePrescriptionStore.value(dayKey: day.key, exerciseName: exerciseName, fallback: exercise)
+                if isExpanded {
+                    Divider().overlay(Color.white.opacity(0.07))
 
-                        HStack(spacing: 10) {
-                            NavigationLink {
-                                ExerciseSessionView(day: day, index: index, exercise: exerciseName)
-                            } label: {
-                                HStack(spacing: 12) {
-                                    ExerciseArtworkView(exercise: exercise, compact: true)
-                                        .frame(width: 82, height: 70)
+                    if day.exercises.isEmpty {
+                        Text("لا توجد تمارين داخل هذا القسم")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.vertical, 10)
+                    } else {
+                        ForEach(Array(day.exercises.enumerated()), id: \.offset) { index, exerciseName in
+                            let exercise = ExerciseCatalog.resolved(exerciseName)
+                            let prescription = ExercisePrescriptionStore.value(dayKey: day.key, exerciseName: exerciseName, fallback: exercise)
 
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(exercise.nameAR)
-                                            .font(.subheadline.bold())
-                                            .foregroundStyle(.white)
-                                            .lineLimit(2)
-                                        Text(exercise.nameEN)
-                                            .font(.caption2)
-                                            .foregroundStyle(.white.opacity(0.44))
-                                            .lineLimit(1)
-                                        Text(prescription.summary)
-                                            .font(.caption2)
-                                            .foregroundStyle(FitTheme.accent)
-                                            .lineLimit(1)
+                            HStack(spacing: 10) {
+                                NavigationLink {
+                                    ExerciseSessionView(day: day, index: index, exercise: exerciseName)
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        ExerciseArtworkView(exercise: exercise, compact: true)
+                                            .frame(width: 82, height: 70)
+
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(exercise.nameAR)
+                                                .font(.subheadline.bold())
+                                                .foregroundStyle(.white)
+                                                .lineLimit(2)
+                                            Text(exercise.nameEN)
+                                                .font(.caption2)
+                                                .foregroundStyle(.white.opacity(0.44))
+                                                .lineLimit(1)
+                                            Text(prescription.summary)
+                                                .font(.caption2)
+                                                .foregroundStyle(FitTheme.accent)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer(minLength: 2)
                                     }
-                                    Spacer(minLength: 2)
+                                    .contentShape(Rectangle())
                                 }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                                .buttonStyle(.plain)
 
-                            NavigationLink {
-                                ExerciseDetailView(exercise: exercise, days: allDays, onPlanChanged: onPlanChanged)
-                            } label: {
-                                Image(systemName: "info.circle.fill")
-                                    .font(.title3)
-                                    .foregroundStyle(FitTheme.accentBlue)
-                                    .frame(width: 36, height: 52)
-                            }
-                            .accessibilityLabel("شرح تمرين \(exercise.displayName)")
-                        }
+                                NavigationLink {
+                                    ExerciseDetailView(exercise: exercise, days: allDays, onPlanChanged: onPlanChanged)
+                                } label: {
+                                    Image(systemName: "info.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(FitTheme.accentBlue)
+                                        .frame(width: 34, height: 52)
+                                }
+                                .accessibilityLabel("شرح تمرين \(exercise.displayName)")
 
-                        if index < day.exercises.count - 1 {
-                            Divider().overlay(Color.white.opacity(0.06))
+                                Menu {
+                                    Button(role: .destructive) {
+                                        pendingDeleteExercise = exerciseName
+                                    } label: {
+                                        Label("حذف من الجدول", systemImage: "trash")
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
+                                        .font(.title3)
+                                        .foregroundStyle(.white.opacity(0.54))
+                                        .frame(width: 34, height: 52)
+                                }
+                                .accessibilityLabel("خيارات تمرين \(exercise.displayName)")
+                            }
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    pendingDeleteExercise = exerciseName
+                                } label: {
+                                    Label("حذف من الجدول", systemImage: "trash")
+                                }
+                            }
+
+                            if index < day.exercises.count - 1 {
+                                Divider().overlay(Color.white.opacity(0.06))
+                            }
                         }
                     }
                 }
             }
         }
         .padding(.horizontal)
+        .confirmationDialog(
+            pendingDeleteSection ? "حذف القسم؟" : "حذف التمرين؟",
+            isPresented: Binding(
+                get: { pendingDeleteSection || pendingDeleteExercise != nil },
+                set: { value in
+                    if !value {
+                        pendingDeleteSection = false
+                        pendingDeleteExercise = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(pendingDeleteSection ? "حذف القسم" : "حذف التمرين", role: .destructive) {
+                Task { await performDelete() }
+            }
+            Button("إلغاء", role: .cancel) {
+                pendingDeleteSection = false
+                pendingDeleteExercise = nil
+            }
+        } message: {
+            Text(pendingDeleteSection
+                 ? "سيختفي القسم وتمارينه من برنامجك الحالي، بينما يبقى السجل القديم محفوظًا."
+                 : "سيختفي التمرين من هذا القسم، بينما يبقى سجله القديم محفوظًا.")
+        }
+        .alert("تعذر الحذف", isPresented: Binding(
+            get: { deleteError != nil },
+            set: { if !$0 { deleteError = nil } }
+        )) {
+            Button("حسنًا", role: .cancel) { deleteError = nil }
+        } message: {
+            Text(deleteError ?? "")
+        }
+    }
+
+    @MainActor
+    private func performDelete() async {
+        guard !deleting else { return }
+        deleting = true
+        defer { deleting = false }
+        do {
+            if pendingDeleteSection {
+                try await APIClient.shared.deleteSection(day: day.key)
+            } else if let name = pendingDeleteExercise {
+                try await APIClient.shared.deleteExercise(day: day.key, name: name)
+            }
+            pendingDeleteSection = false
+            pendingDeleteExercise = nil
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            onPlanChanged()
+        } catch {
+            deleteError = error.localizedDescription
+        }
     }
 }
 

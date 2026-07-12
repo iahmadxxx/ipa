@@ -67,6 +67,7 @@ struct ExerciseLibraryRootView: View {
     @State private var showCustomExercise = false
     @State private var customRevision = 0
     @State private var selectedExercise: ExerciseDefinition?
+    @State private var pendingDeleteCustom: ExerciseDefinition?
 
     private var allExercises: [ExerciseDefinition] {
         _ = customRevision
@@ -107,8 +108,7 @@ struct ExerciseLibraryRootView: View {
                         onOpen: { selectedExercise = exercise },
                         onAdd: { addTarget = exercise },
                         onDeleteCustom: exercise.isCustom ? {
-                            CustomExerciseStore.delete(exercise)
-                            customRevision += 1
+                            pendingDeleteCustom = exercise
                         } : nil
                     )
                     .padding(.horizontal)
@@ -145,6 +145,24 @@ struct ExerciseLibraryRootView: View {
         }
         .navigationDestination(item: $selectedExercise) { exercise in
             ExerciseDetailView(exercise: exercise, days: days, onPlanChanged: onPlanChanged)
+        }
+        .confirmationDialog(
+            "حذف التمرين المخصص؟",
+            isPresented: Binding(
+                get: { pendingDeleteCustom != nil },
+                set: { if !$0 { pendingDeleteCustom = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("حذف من المكتبة", role: .destructive) {
+                guard let exercise = pendingDeleteCustom else { return }
+                CustomExerciseStore.delete(exercise)
+                pendingDeleteCustom = nil
+                customRevision += 1
+            }
+            Button("إلغاء", role: .cancel) { pendingDeleteCustom = nil }
+        } message: {
+            Text("سيُحذف تعريف التمرين المخصص من مكتبتك. سجلات الجولات القديمة لن تُحذف.")
         }
     }
 
@@ -332,6 +350,7 @@ struct ExerciseDetailView: View {
     @State private var mistakesExpanded = false
     @State private var tipsExpanded = false
     @State private var statsExpanded = false
+    @State private var musclesExpanded = true
 
     var body: some View {
         ScrollView {
@@ -382,6 +401,10 @@ struct ExerciseDetailView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+                CollapsibleDetailCard(title: "العضلات المستهدفة", icon: "figure.strengthtraining.traditional", tint: FitTheme.accent, isExpanded: $musclesExpanded) {
+                    MuscleAnatomyMapView(primary: exercise.primaryMuscle, secondary: exercise.secondaryMuscles)
+                }
+
                 if historyLoading {
                     Card {
                         HStack {
@@ -411,20 +434,6 @@ struct ExerciseDetailView: View {
 
                 CollapsibleDetailCard(title: "نصائح مهمة", icon: "lightbulb.fill", tint: FitTheme.warning, isExpanded: $tipsExpanded) {
                     BulletListView(items: exercise.tips, tint: FitTheme.warning)
-                }
-
-                if !exercise.secondaryMuscles.isEmpty {
-                    Card {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("العضلات المساعدة")
-                                .font(.headline)
-                            HStack(spacing: 7) {
-                                ForEach(exercise.secondaryMuscles) { muscle in
-                                    InfoChip(text: muscle.rawValue, tint: muscle.tint)
-                                }
-                            }
-                        }
-                    }
                 }
 
                 if !days.isEmpty {

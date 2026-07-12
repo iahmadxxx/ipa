@@ -253,6 +253,10 @@ extension APIClient {
     func syncActivities(days: Int = 30) async throws -> ActivitySyncResponse {
         try await request("api/ios/activities/sync", method: "POST", body: ["days": days], timeout: 70)
     }
+
+    func deleteActivity(id: Int, days: Int = 30) async throws -> ActivityListResponse {
+        try await request("api/ios/activities/session/delete", method: "POST", body: ["id": id, "days": days])
+    }
 }
 
 // MARK: - Native tracker
@@ -549,6 +553,8 @@ struct ActivityHubView: View {
     @State private var reauthURL: URL?
     @State private var page: ActivityHubPage = .start
     @State private var expandedCategories: Set<ActivityCategory> = [.popular, .cardio, .outdoors]
+    @State private var pendingDeleteSession: ActivitySessionRecord?
+    @State private var deletingSession = false
 
     private var searchNeedle: String {
         search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -647,6 +653,22 @@ struct ActivityHubView: View {
             }
             Button("تم", role: .cancel) { notice = nil }
         } message: { Text(notice ?? "") }
+        .confirmationDialog(
+            "حذف النشاط من FitbitAir؟",
+            isPresented: Binding(
+                get: { pendingDeleteSession != nil },
+                set: { if !$0 { pendingDeleteSession = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("حذف النشاط", role: .destructive) {
+                guard let session = pendingDeleteSession else { return }
+                Task { await deleteSession(session) }
+            }
+            Button("إلغاء", role: .cancel) { pendingDeleteSession = nil }
+        } message: {
+            Text("سيختفي النشاط من سجل FitbitAir وتقاريره. هذا لا يحذف السجل الأصلي من حساب Google/Fitbit.")
+        }
     }
 
     private var activityHeader: some View {
@@ -753,8 +775,11 @@ struct ActivityHubView: View {
             if sessions.isEmpty {
                 Card { Text("ما عندك نشاطات محفوظة إلى الآن").foregroundStyle(.white.opacity(0.55)).frame(maxWidth: .infinity, alignment: .leading) }.padding(.horizontal)
             } else {
-                ForEach(sessions.prefix(12)) { session in
-                    ActivitySessionRow(session: session).padding(.horizontal)
+                ForEach(sessions.prefix(100)) { session in
+                    ActivitySessionRow(session: session) {
+                        pendingDeleteSession = session
+                    }
+                    .padding(.horizontal)
                 }
             }
         }.padding(.top, 8)
@@ -798,6 +823,25 @@ struct ActivityHubView: View {
             notice = "\(response.message) — جديد: \(response.imported)، مدمج: \(response.merged)"
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    @MainActor
+    private func deleteSession(_ session: ActivitySessionRecord) async {
+        guard !deletingSession else { return }
+        deletingSession = true
+        defer { deletingSession = false }
+        let oldSessions = sessions
+        sessions.removeAll { $0.id == session.id }
+        pendingDeleteSession = nil
+        do {
+            let response = try await APIClient.shared.deleteActivity(id: session.id, days: 30)
+            sessions = response.sessions
+            summary = response.summary
+            notice = "تم حذف النشاط من FitbitAir."
+        } catch {
+            sessions = oldSessions
+            errorMessage = "تعذر حذف النشاط: \(error.localizedDescription)"
+        }
     }
 
     private static func clock(_ seconds: Int) -> String { String(format: "%02d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60) }
@@ -920,6 +964,7 @@ private struct ActivityMiniMetric: View {
 
 private struct ActivitySessionRow: View {
     let session: ActivitySessionRecord
+    let onDelete: () -> Void
     var definition: ActivityDefinition? { ActivityCatalog.all.first { $0.officialType == session.exerciseType } }
     var body: some View {
         Card {
@@ -936,11 +981,25 @@ private struct ActivitySessionRow: View {
                     }.font(.caption2).foregroundStyle(.white.opacity(0.64))
                 }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 5) {
+                VStack(alignment: .trailing, spacing: 9) {
                     Image(systemName: session.syncStatus == "synced" || session.syncStatus == "uploaded" ? "checkmark.icloud.fill" : session.syncStatus == "needs_reauth" ? "exclamationmark.icloud.fill" : "icloud.and.arrow.up")
                         .foregroundStyle(session.syncStatus == "needs_reauth" ? FitTheme.warning : FitTheme.accent)
-                    Text(session.source.replacingOccurrences(of: "_", with: " ")).font(.system(size: 8)).foregroundStyle(.white.opacity(0.35))
+                    Menu {
+                        Button(role: .destructive, action: onDelete) {
+                            Label("حذف النشاط", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.title3)
+                            .foregroundStyle(.white.opacity(0.55))
+                    }
+                    .accessibilityLabel("خيارات النشاط")
                 }
+            }
+        }
+        .contextMenu {
+            Button(role: .destructive, action: onDelete) {
+                Label("حذف النشاط", systemImage: "trash")
             }
         }
     }
@@ -1122,6 +1181,25 @@ private struct ActivityLiveView: View {
             errorMessage = message
             onQueued(message)
             dismiss()
+        }
+    }
+
+    @MainActor
+    private func deleteSession(_ session: ActivitySessionRecord) async {
+        guard !deletingSession else { return }
+        deletingSession = true
+        defer { deletingSession = false }
+        let oldSessions = sessions
+        sessions.removeAll { $0.id == session.id }
+        pendingDeleteSession = nil
+        do {
+            let response = try await APIClient.shared.deleteActivity(id: session.id, days: 30)
+            sessions = response.sessions
+            summary = response.summary
+            notice = "تم حذف النشاط من FitbitAir."
+        } catch {
+            sessions = oldSessions
+            errorMessage = "تعذر حذف النشاط: \(error.localizedDescription)"
         }
     }
 
